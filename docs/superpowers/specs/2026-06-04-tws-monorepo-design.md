@@ -18,8 +18,8 @@
 
 | 面向 | 選擇 | 原因 |
 |------|------|------|
-| IB 連線環境 | TWS（port 7497） | 本機開發，有 GUI 監控 |
-| Python IB 套件 | ib_insync / ib_async | asyncio 原生，reqId 自動管理，開發效率高 |
+| IB 連線環境 | TWS（port config-driven；paper 預設 7497，live 7496） | 本機開發，有 GUI 監控 |
+| Python IB 套件 | `ib_async`（ib_insync 的維護繼承者） | asyncio 原生，reqId 自動管理，開發效率高 |
 | Monorepo 工具 | uv workspaces | 單一 lockfile，`uv sync` 一鍵，比 Poetry 快 10-100x |
 | 報價儲存 | Parquet（分日） | 壓縮率佳，DuckDB/pandas 直讀，回測直接用 |
 | 決策日誌 | DuckDB | 可 JOIN 報價做覆盤分析 |
@@ -62,13 +62,13 @@ trading-system/
 apps/trader
     │
     ├──► execution  ──► tws-client ──► core
-    ├──► strategy   ──► market-data ──► core
+    ├──► strategy   ──────────────────► core   ← strategy 只依賴 core，不依賴 market-data
     ├──► backtest   ──► market-data ──► core
     ├──► risk       ──────────────────► core
     └──► storage    ──────────────────► core
 ```
 
-`core` 永不依賴其他 package。`tws-client` 只知道 IB API，不知道策略邏輯。`strategy` 完全不知道 IB 的存在。
+`core` 永不依賴其他 package。`tws-client` 只知道 IB API，不知道策略邏輯。`strategy` 完全不知道 IB 的存在，也不直接依賴 `market-data`——`DataHandler` 由 `apps/trader` 注入（Dependency Injection），策略只看到 `DataHandler` ABC（定義在 `core`）。
 
 ---
 
@@ -88,9 +88,12 @@ class Bar:
 
 @dataclass
 class OptionChain:
-    expirations: list[str]     # ["20250117", "20250221", ...]
-    strikes: list[float]       # [150.0, 152.5, 155.0, ...]
+    exchange: str              # "SMART"
+    trading_class: str         # 消除歧義用，如 "SPYXPL"
     multiplier: int            # 通常 100
+    expirations: list[str]     # ["20250117", "20250221", ...]（已排序）
+    strikes: list[float]       # [150.0, 152.5, 155.0, ...]（已排序）
+    # 注意：並非所有 strike×expiry 組合都有效，需 qualifyContracts 驗證
 
 @dataclass
 class RiskLimits:
@@ -167,7 +170,11 @@ class MarketEvent:
     ask: float
     last: float
     volume: int
-    greeks: Greeks | None = None   # 期權有值，股票為 None
+    # 期權 Greeks（對應 ib_async Ticker 欄位；股票時均為 None）
+    bid_greeks:   Greeks | None = None   # tick 10 — bid 側定價
+    ask_greeks:   Greeks | None = None   # tick 11 — ask 側定價
+    last_greeks:  Greeks | None = None   # tick 12 — 最後成交定價
+    model_greeks: Greeks | None = None   # tick 13 — IB 模型定價（最穩定）
     bar: Bar | None = None
 
 @dataclass
@@ -237,7 +244,7 @@ class SimClock:
 
 ### 5.1 連線管理
 
-- 連線至 TWS，port 7497
+- 連線至 TWS，port 由 `config.toml` 設定（paper 預設 7497；live 7496；IB Gateway paper/live 分別為 4002/4001）
 - 訂閱 `disconnectedEvent`，斷線後 30 秒自動重連（應對 IB 23:45 EST 日終斷線）
 - 單一 `IB()` 實例，整個系統共用
 
@@ -245,24 +252,29 @@ class SimClock:
 
 | API | 用途 | 限制 |
 |-----|------|------|
-| `reqMktData(genericTickList="")` | bid/ask/last 即時推播；OPT contract 自動觸發 `tickOptionComputation`（tick 10-13）推送 Greeks | 100 concurrent subscriptions |
+| `reqMktData(genericTickList="")` | bid/ask/last 即時推播；OPT contract 自動觸發 `tickOptionComputation`（tick 10-13）推送 Greeks；需同時持有期權與標的的市場資料訂閱權限 | 初始最低 100 concurrent subscriptions（依帳戶條件自動增加） |
 | `reqRealTimeBars` | 每 5 秒一根 OHLCV bar | 每次請求計 1 subscription |
-| `reqHistoricalData` | 歷史 K 線（系統啟動預熱） | 同 contract 15s 間隔，10分鐘 ≤60次 |
-| `reqSecDefOptParams` | 取期權鏈（expirations + strikes） | 無速率限制 |
+| `reqHistoricalData` | 歷史 K 線（系統啟動預熱） | 同 contract/exchange/tick-type 2 秒內 ≤5 次；15s 無重複；10 分鐘全局 ≤60 次；BID_ASK 計 2 次 |
+| `reqSecDefOptParams` | 取期權鏈（expirations + strikes），回傳按 exchange/tradingClass/multiplier 分組 | 本身無速率限制，但後續 `qualifyContracts` 有正常 API pacing |
 
 ### 5.3 期權鏈流程
 
-1. `reqSecDefOptParams(underlying, con_id)` → 取所有到期日 + 行使價
-2. 策略選定腿的組合 → 建立 `Leg[]`
-3. `qualifyContracts()` → 批次填入每腿的 `con_id`（BAG 下單前必須）
-4. 組裝 IB BAG Contract → `placeOrder()`
+1. `reqSecDefOptParams(underlyingSymbol, futFopExchange="", underlyingSecType="STK", underlyingConId)` → 回傳多組 `(exchange, tradingClass, multiplier, expirations, strikes)`；需按 exchange 篩選（取 "SMART"）
+2. `OptionChain` 儲存完整結構（含 tradingClass、multiplier）；**並非所有 strike×expiry 組合都存在**，需 `qualifyContracts` 驗證
+3. 策略選定腿的組合 → 建立 `Leg[]`
+4. `qualifyContracts()` → 批次驗證並填入每腿的 `con_id`（BAG 下單前必須；無效組合會拋例外）
+5. 組裝 IB BAG Contract → `placeOrder()`
 
 ### 5.4 多腿執行
 
 - 單腿：直接 Contract + Order
 - 多腿：組裝 `secType="BAG"` 的 ComboLeg 結構
-- 每腿需有 `con_id`（步驟 3 已填入）
-- 下單以淨 debit/credit 作為 `lmtPrice`
+- 每腿 ComboLeg 必填：`conId`（qualifyContracts 填入）、`ratio`（正整數）、`action`（"BUY"/"SELL"）、`exchange`
+- Covered Call 的 stock:option ratio 為 100:1（100 股 vs 1 個 option contract）
+- `lmtPrice` 符號規則：
+  - 淨收入（credit spread / short combo）→ `lmtPrice` 為**負值**（IB 用負數表示 credit）
+  - 淨支出（debit spread）→ `lmtPrice` 為**正值**
+  - 實作時需特別注意，容易混淆
 
 ### 5.5 速率限制防護
 
@@ -299,11 +311,17 @@ class HistoricalDataHandler(DataHandler):
 
 | 資料 | 格式 | 路徑 |
 |------|------|------|
-| 報價 / bar / Greeks | Parquet（分日） | `data/ticks/{symbol}/{date}.parquet` |
-| 決策 / 訊號 | DuckDB | `data/decisions.duckdb` |
-| 訂單狀態 | SQLite | `data/orders.db` |
-| 成交明細 | SQLite | `data/fills.db` |
+| 股票報價 / bar | Parquet（Hive 分區） | `data/ticks/sec_type=STK/symbol={sym}/date={date}/data.parquet` |
+| 期權報價 / Greeks | Parquet（Hive 分區） | `data/ticks/sec_type=OPT/symbol={sym}/expiry={exp}/strike={k}/right={r}/date={date}/data.parquet` |
+| 決策 / 訊號 | DuckDB（單進程寫入） | `data/analytics.duckdb` |
+| 訂單 + 成交 + 佣金 | SQLite（WAL 模式，單一 DB） | `data/trades.db` |
 | 系統/錯誤 log | 結構化 JSON | stdout + rotating file |
+
+**注意：**
+- Parquet 用 Hive 分區路徑，DuckDB 可直接 pushdown filter 查詢，不需全掃
+- 期權 Parquet 路徑包含 `con_id` 或 `expiry/strike/right` 避免合約衝突
+- DuckDB 為單進程 analytics 寫入（不支援多進程並發寫）；SQLite WAL 模式支援單寫多讀
+- 訂單 + 成交合入同一個 `trades.db`，以便原子性關聯訂單生命週期
 
 ### 7.2 決策記錄欄位
 
@@ -344,9 +362,10 @@ class HistoricalDataHandler(DataHandler):
 
 ### 8.3 Greeks 計算
 
-- Live：優先使用 `MarketEvent.greeks`（IB 推播的市場定價）
+- Live：優先使用 `MarketEvent.model_greeks`（IB tick 13，最穩定）；其次 `bid_greeks` / `ask_greeks`
+- 策略決策通常用 `model_greeks`；執行時 slippage 估算用 `bid_greeks` 或 `ask_greeks`
 - Backtest / 補值：`py_vollib` Black-Scholes 本地計算
-- 多腿合成：各腿 Greeks × quantity 加總
+- 多腿合成：各腿 Greeks × quantity 加總（`GreeksCalculator.composite(legs)`）
 
 ---
 
@@ -356,7 +375,8 @@ class HistoricalDataHandler(DataHandler):
 
 **Layer 1 — Pre-Trade Validator**（同步，μs 級）
 - 觸發時機：`SignalEvent` → `OrderEvent` 之間
-- 檢查項目：倉位上限、Delta 敞口、Vega 敞口、保證金、Bid-Ask spread
+- 檢查項目：倉位上限、Delta 敞口、Vega 敞口、Bid-Ask spread
+- **保證金檢查**：IB 不支援 Smart Combo 的 whatif 試算，因此保證金僅做**本地估算**（用固定公式，非 API 查詢），降至 Real-Time Monitor 層處理精確值
 - 結果：APPROVED → 發出 `OrderEvent`；REJECTED → 記錄到決策日誌
 
 **Layer 2 — Real-Time Monitor**（非同步，持續運行）
@@ -378,8 +398,14 @@ class HistoricalDataHandler(DataHandler):
 
 ### 10.2 模擬成交
 
-- Fill at next bar open（最保守，無 look-ahead bias）
-- 佣金模擬：IB 期權 $0.65/contract，最低 $1.00
+**股票（MVP 階段）：** Fill at next bar open（最保守，無 look-ahead bias）  
+**期權（第二階段）：** 需要 bid/ask 報價回放，實作：
+- 按 bid/ask midpoint 成交（保守估計）
+- 模擬 spread crossing（buy at ask, sell at bid）
+- 部分成交（partial fill）模擬
+- 到期 / 行使 / 被 assign 處理
+
+佣金模擬：IB 期權 $0.65/contract，最低 $1.00；股票 $0.005/股，最低 $1.00
 
 ### 10.3 績效指標
 
