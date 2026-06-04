@@ -75,6 +75,39 @@ apps/trader
 ## 3. 核心資料模型（`core/models.py`）
 
 ```python
+# 輔助型別（stub，實作時補齊欄位）
+@dataclass
+class Bar:
+    timestamp: datetime
+    symbol: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+@dataclass
+class OptionChain:
+    expirations: list[str]     # ["20250117", "20250221", ...]
+    strikes: list[float]       # [150.0, 152.5, 155.0, ...]
+    multiplier: int            # 通常 100
+
+@dataclass
+class RiskLimits:
+    max_delta: float           # 組合 Delta 上限（絕對值）
+    max_vega: float            # 組合 Vega 上限
+    max_drawdown: float        # 最大回撤（0~1）
+    max_position_size: int     # 單一持倉最大張數
+    max_margin_utilization: float  # 保證金使用率上限（0~1）
+
+    @classmethod
+    def from_config(cls) -> "RiskLimits": ...
+
+@dataclass
+class ValidationResult:
+    approved: bool
+    reason: str | None = None  # 若拒絕，人類可讀原因
+
 @dataclass
 class Contract:
     symbol: str
@@ -123,7 +156,7 @@ class Order:
 
 ## 4. 事件系統（`core/events.py` + `core/bus.py`）
 
-### 4.1 四種核心事件
+### 4.1 五種核心事件
 
 ```python
 @dataclass
@@ -158,6 +191,12 @@ class FillEvent:
     legs_filled: list[Leg]         # 含實際成交價
     timestamp: datetime
     commission: float
+
+@dataclass
+class AlertEvent:
+    message: str
+    value: float                   # 觸發閾值的實際數值（如當前 delta）
+    timestamp: datetime
 ```
 
 ### 4.2 事件流
@@ -206,7 +245,7 @@ class SimClock:
 
 | API | 用途 | 限制 |
 |-----|------|------|
-| `reqMktData(genericTickList="100")` | bid/ask/last + 期權 Greeks 即時推播 | 100 concurrent subscriptions |
+| `reqMktData(genericTickList="")` | bid/ask/last 即時推播；OPT contract 自動觸發 `tickOptionComputation`（tick 10-13）推送 Greeks | 100 concurrent subscriptions |
 | `reqRealTimeBars` | 每 5 秒一根 OHLCV bar | 每次請求計 1 subscription |
 | `reqHistoricalData` | 歷史 K 線（系統啟動預熱） | 同 contract 15s 間隔，10分鐘 ≤60次 |
 | `reqSecDefOptParams` | 取期權鏈（expirations + strikes） | 無速率限制 |
