@@ -1,0 +1,11 @@
+[tws]
+host = "127.0.0.1"
+port = 7497
+client_id = 1
+
+[risk]
+max_delta = 500.0
+max_vega = 1000.0
+max_drawdown = 0.05
+max_position_size = 10
+max_margin_utilization = 0.8

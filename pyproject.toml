@@ -1,0 +1,13 @@
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.9",
+]
+
+[tool.uv.workspace]
+members = ["packages/*", "apps/trader"]
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
+asyncio_mode = "auto"

@@ -1,0 +1,10 @@
+[project]
+name = "trading-app"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "trading-core",
+]
+
+[tool.uv.sources]
+trading-core = { workspace = true }
