@@ -38,7 +38,13 @@ class TradeStore:
         """)
         await self._db.commit()
 
+    def _require_db(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("TradeStore not initialized; call await init() first")
+        return self._db
+
     async def log_order(self, event: OrderEvent) -> str:
+        db = self._require_db()
         order_id = str(uuid.uuid4())
         legs = [
             {
@@ -51,7 +57,7 @@ class TradeStore:
             }
             for leg in event.order.legs
         ]
-        await self._db.execute(
+        await db.execute(
             "INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 order_id,
@@ -64,10 +70,11 @@ class TradeStore:
                 json.dumps(legs),
             ),
         )
-        await self._db.commit()
+        await db.commit()
         return order_id
 
     async def log_fill(self, event: FillEvent) -> None:
+        db = self._require_db()
         legs = [
             {
                 "symbol": leg.contract.symbol,
@@ -77,7 +84,7 @@ class TradeStore:
             }
             for leg in event.legs_filled
         ]
-        await self._db.execute(
+        await db.execute(
             "INSERT INTO fills (order_id, timestamp, commission, legs_json) VALUES (?, ?, ?, ?)",
             (
                 event.order_id,
@@ -86,26 +93,28 @@ class TradeStore:
                 json.dumps(legs),
             ),
         )
-        await self._db.commit()
+        await db.commit()
 
     async def query_orders(self, strategy_id: str | None = None) -> list[dict]:
+        db = self._require_db()
         if strategy_id:
-            cursor = await self._db.execute(
+            cursor = await db.execute(
                 "SELECT * FROM orders WHERE strategy_id = ?", (strategy_id,)
             )
         else:
-            cursor = await self._db.execute("SELECT * FROM orders")
+            cursor = await db.execute("SELECT * FROM orders")
         rows = await cursor.fetchall()
         cols = [d[0] for d in cursor.description]
         return [dict(zip(cols, row, strict=False)) for row in rows]
 
     async def query_fills(self, order_id: str | None = None) -> list[dict]:
+        db = self._require_db()
         if order_id:
-            cursor = await self._db.execute(
+            cursor = await db.execute(
                 "SELECT * FROM fills WHERE order_id = ?", (order_id,)
             )
         else:
-            cursor = await self._db.execute("SELECT * FROM fills")
+            cursor = await db.execute("SELECT * FROM fills")
         rows = await cursor.fetchall()
         cols = [d[0] for d in cursor.description]
         return [dict(zip(cols, row, strict=False)) for row in rows]

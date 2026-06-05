@@ -51,13 +51,28 @@ class SimulatedExecutor:
 
 
 def _can_fill(order_event: OrderEvent, snapshot: dict[str, MarketEvent]) -> bool:
-    return all(leg.contract.symbol in snapshot for leg in order_event.order.legs)
+    order = order_event.order
+    if not all(leg.contract.symbol in snapshot for leg in order.legs):
+        return False
+    if order.order_type == "LMT" and order.limit_price is not None:
+        for leg in order.legs:
+            market = snapshot[leg.contract.symbol]
+            price = _mid_price(leg, market)
+            if leg.quantity > 0 and price > order.limit_price:
+                return False
+            if leg.quantity < 0 and price < order.limit_price:
+                return False
+    return True
 
 
-def _fill_price(leg: Leg, market: MarketEvent) -> float:
+def _mid_price(leg: Leg, market: MarketEvent) -> float:
     if leg.contract.sec_type == "OPT":
         return (market.bid + market.ask) / 2
     return market.last
+
+
+def _fill_price(leg: Leg, market: MarketEvent) -> float:
+    return _mid_price(leg, market)
 
 
 def _commission(leg: Leg) -> float:

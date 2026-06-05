@@ -114,7 +114,7 @@ async def test_backtest_app_wires_strategy_risk_execution_and_storage(tmp_path):
         fills = await app.run()
         orders = await app.trade_store.query_orders("test")
         stored_fills = await app.trade_store.query_fills()
-        decisions = app.decision_logger.query(
+        decisions = await app.decision_logger.query(
             "SELECT strategy_id, risk_approved FROM decisions ORDER BY timestamp"
         )
 
@@ -304,7 +304,7 @@ def test_app_risk_state_tracks_filled_positions_and_signal_greeks():
     )
 
     assert state.positions()[0].strategy_id == "sim-1"
-    assert state.equity() == 100000.0
+    assert state.equity() == 100000.0 - 100 * 105.0 - 1.0
     assert state.proposed_greeks(signal).delta == 25.0
     assert state.proposed_greeks(signal).vega == 3.0
 

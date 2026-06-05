@@ -40,7 +40,9 @@ def ticker_to_market_event(ticker: ibi.Ticker, symbol: str) -> MarketEvent:
         bid=_safe(ticker.bid),
         ask=_safe(ticker.ask),
         last=_safe(ticker.last),
-        volume=int(ticker.volume) if ticker.volume and not math.isnan(ticker.volume) else 0,
+        volume=int(ticker.volume)
+        if ticker.volume and not math.isnan(ticker.volume)
+        else 0,
         model_greeks=model_greeks,
     )
 

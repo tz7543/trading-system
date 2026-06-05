@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from core.events import MarketEvent, SignalEvent
 from core.models import Contract, Greeks, Leg, Order, ValidationResult
 from storage.decision_logger import DecisionLogger
@@ -39,10 +41,11 @@ def _make_market():
     )
 
 
-def test_log_approved_decision(tmp_path):
+@pytest.mark.asyncio
+async def test_log_approved_decision(tmp_path):
     logger = DecisionLogger(tmp_path / "analytics.duckdb")
-    logger.log(_make_signal(), _make_market(), ValidationResult(approved=True))
-    rows = logger.query("SELECT * FROM decisions")
+    await logger.log(_make_signal(), _make_market(), ValidationResult(approved=True))
+    rows = await logger.query("SELECT * FROM decisions")
     assert len(rows) == 1
     assert rows[0]["strategy_id"] == "ic_1"
     assert rows[0]["risk_approved"] == True  # noqa: E712 — DuckDB BOOLEAN may be numpy.bool_
@@ -50,21 +53,23 @@ def test_log_approved_decision(tmp_path):
     logger.close()
 
 
-def test_log_rejected_decision(tmp_path):
+@pytest.mark.asyncio
+async def test_log_rejected_decision(tmp_path):
     logger = DecisionLogger(tmp_path / "analytics.duckdb")
-    logger.log(
+    await logger.log(
         _make_signal(),
         _make_market(),
         ValidationResult(approved=False, reason="Delta limit exceeded"),
     )
-    rows = logger.query("SELECT * FROM decisions WHERE risk_approved = false")
+    rows = await logger.query("SELECT * FROM decisions WHERE risk_approved = false")
     assert len(rows) == 1
     assert rows[0]["risk_reason"] == "Delta limit exceeded"
     logger.close()
 
 
-def test_query_empty(tmp_path):
+@pytest.mark.asyncio
+async def test_query_empty(tmp_path):
     logger = DecisionLogger(tmp_path / "analytics.duckdb")
-    rows = logger.query("SELECT * FROM decisions")
+    rows = await logger.query("SELECT * FROM decisions")
     assert rows == []
     logger.close()

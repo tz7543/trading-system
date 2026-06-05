@@ -23,6 +23,7 @@ class LiveDataHandler(DataHandler):
         self, contract: Contract, duration: str, bar_size: str
     ) -> list[Bar]:
         ib_contract = to_ib_contract(contract)
+        await self._ib.qualifyContractsAsync(ib_contract)
         bars = await self._ib.reqHistoricalDataAsync(
             ib_contract,
             endDateTime="",

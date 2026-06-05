@@ -52,7 +52,7 @@ class TickWriter:
         self._closed = True
 
     def _flush_partition(self, key: str) -> None:
-        rows = self._buffers.pop(key, [])
+        rows = self._buffers.get(key, [])
         if not rows:
             return
         partition_dir = Path(key)
@@ -64,3 +64,4 @@ class TickWriter:
             schema=TICK_SCHEMA,
         )
         pq.write_table(table, filepath, use_dictionary=False)
+        del self._buffers[key]

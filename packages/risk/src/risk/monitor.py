@@ -63,4 +63,6 @@ class RealTimeMonitor:
             drawdown = (self._peak_equity - equity) / self._peak_equity
             if drawdown > self._limits.max_drawdown:
                 return True
-        return abs(portfolio_greeks.delta) > self._limits.max_delta
+        if abs(portfolio_greeks.delta) > self._limits.max_delta:
+            return True
+        return abs(portfolio_greeks.vega) > self._limits.max_vega

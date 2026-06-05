@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -30,36 +31,38 @@ class DecisionLogger:
             )
         """)
 
-    def log(
+    async def log(
         self,
         signal: SignalEvent,
         market: MarketEvent,
         result: ValidationResult,
     ) -> None:
         greeks = market.model_greeks
-        self._db.execute(
+        params = [
+            signal.timestamp,
+            signal.strategy_id,
+            market.symbol,
+            market.bid,
+            market.ask,
+            market.last,
+            greeks.implied_vol if greeks else None,
+            greeks.delta if greeks else None,
+            greeks.underlying_price if greeks else None,
+            signal.direction,
+            signal.reason,
+            json.dumps(signal.context),
+            json.dumps(_order_to_dict(signal.proposed_order)),
+            result.approved,
+            result.reason,
+        ]
+        await asyncio.to_thread(
+            self._db.execute,
             "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [
-                signal.timestamp,
-                signal.strategy_id,
-                market.symbol,
-                market.bid,
-                market.ask,
-                market.last,
-                greeks.implied_vol if greeks else None,
-                greeks.delta if greeks else None,
-                greeks.underlying_price if greeks else None,
-                signal.direction,
-                signal.reason,
-                json.dumps(signal.context),
-                json.dumps(_order_to_dict(signal.proposed_order)),
-                result.approved,
-                result.reason,
-            ],
+            params,
         )
 
-    def query(self, sql: str) -> list[dict]:
-        result = self._db.execute(sql)
+    async def query(self, sql: str) -> list[dict]:
+        result = await asyncio.to_thread(self._db.execute, sql)
         if result.description is None:
             return []
         cols = [d[0] for d in result.description]

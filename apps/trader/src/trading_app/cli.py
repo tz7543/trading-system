@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import signal
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,6 +73,10 @@ async def _run_live(config: TraderConfig) -> int:
     strategy_config = _require_strategy(config)
     contracts = _require_contracts(config)
     app = await build_live_app(config, contracts=contracts)
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, shutdown.set)
     try:
         strategy = load_strategy(
             strategy_config.class_path,
@@ -82,7 +87,9 @@ async def _run_live(config: TraderConfig) -> int:
         )
         subscribe_strategy(app.bus, strategy)
         await app.connect()
-        await app.run_market_data()
+        market_task = asyncio.create_task(app.run_market_data())
+        await shutdown.wait()
+        market_task.cancel()
     finally:
         await app.close()
     return 0

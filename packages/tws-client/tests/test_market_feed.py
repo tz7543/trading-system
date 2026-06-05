@@ -1,6 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import ib_async as ibi
 import pytest
@@ -26,6 +26,7 @@ class FakeTicker:
 async def test_subscribe_yields_market_events():
     """Ticker.updateEvent → asyncio.Queue → AsyncIterator[MarketEvent]."""
     mock_ib = MagicMock()
+    mock_ib.qualifyContractsAsync = AsyncMock()
     fake_ticker = FakeTicker()
     mock_ib.reqMktData.return_value = fake_ticker
 
@@ -57,6 +58,7 @@ async def test_subscribe_yields_market_events():
 async def test_unsubscribe_cancels_mkt_data():
     """Closing the generator calls ib.cancelMktData."""
     mock_ib = MagicMock()
+    mock_ib.qualifyContractsAsync = AsyncMock()
     fake_ticker = FakeTicker()
     mock_ib.reqMktData.return_value = fake_ticker
 

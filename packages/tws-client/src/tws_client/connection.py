@@ -50,11 +50,18 @@ class ConnectionManager:
             self._reconnect_task = asyncio.ensure_future(self._reconnect())
 
     async def _reconnect(self) -> None:
-        await asyncio.sleep(self._reconnect_delay)
-        try:
-            await self._ib.connectAsync(
-                self._host, self._port, self._client_id, timeout=4
-            )
-            logger.info("Reconnected to TWS")
-        except Exception:
-            logger.exception("Reconnection failed, will retry on next disconnect")
+        delay = self._reconnect_delay
+        max_delay = 300
+        while self._auto_reconnect:
+            await asyncio.sleep(delay)
+            try:
+                await self._ib.connectAsync(
+                    self._host, self._port, self._client_id, timeout=4
+                )
+                logger.info("Reconnected to TWS")
+                return
+            except Exception:
+                logger.exception(
+                    "Reconnection failed, retrying in %ds", min(delay * 2, max_delay)
+                )
+                delay = min(delay * 2, max_delay)

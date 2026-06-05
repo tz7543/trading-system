@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,6 +32,8 @@ from strategy.base import BaseStrategy
 from trading_app.config import TraderConfig
 from tws_client import ConnectionManager, LiveDataHandler
 
+logger = logging.getLogger(__name__)
+
 MarketLookup = Callable[[str], MarketEvent | None]
 GreeksProvider = Callable[[], Greeks]
 ProposedGreeksProvider = Callable[[SignalEvent], Greeks]
@@ -43,10 +46,17 @@ class AppRiskState:
     def __init__(self, initial_equity: float = 0.0) -> None:
         self._initial_equity = initial_equity
         self._positions: list[Position] = []
+        self._realized_pnl: float = 0.0
 
     def record_fill(self, event: FillEvent) -> None:
         if not event.legs_filled:
             return
+        for leg in event.legs_filled:
+            if leg.quantity < 0 and leg.entry_price:
+                self._realized_pnl += abs(leg.quantity) * leg.entry_price
+            elif leg.quantity > 0 and leg.entry_price:
+                self._realized_pnl -= abs(leg.quantity) * leg.entry_price
+        self._realized_pnl -= event.commission
         self._positions.append(
             Position(legs=event.legs_filled, strategy_id=event.order_id)
         )
@@ -63,8 +73,6 @@ class AppRiskState:
             total.gamma += position.greeks.gamma
             total.vega += position.greeks.vega
             total.theta += position.greeks.theta
-            total.implied_vol += position.greeks.implied_vol
-            total.underlying_price += position.greeks.underlying_price
         return total
 
     def proposed_greeks(self, signal: SignalEvent) -> Greeks:
@@ -83,7 +91,7 @@ class AppRiskState:
         return Greeks()
 
     def equity(self) -> float:
-        return self._initial_equity
+        return self._initial_equity + self._realized_pnl
 
 
 class RiskPipeline:
@@ -127,7 +135,7 @@ class RiskPipeline:
 
     async def on_signal(self, signal: SignalEvent) -> None:
         if self._circuit_breaker and self._circuit_breaker.is_triggered:
-            self._log_decision(
+            await self._log_decision(
                 signal,
                 ValidationResult(
                     approved=False,
@@ -142,7 +150,7 @@ class RiskPipeline:
             proposed_greeks=self._proposed_greeks_provider(signal),
             positions=self._positions_provider(),
         )
-        self._log_decision(signal, result)
+        await self._log_decision(signal, result)
 
         if not result.approved:
             return
@@ -181,10 +189,12 @@ class RiskPipeline:
                 )
             )
 
-    def _log_decision(self, signal: SignalEvent, result: ValidationResult) -> None:
+    async def _log_decision(
+        self, signal: SignalEvent, result: ValidationResult
+    ) -> None:
         market = self._market_lookup(_signal_symbol(signal))
         if self._decision_logger and market:
-            self._decision_logger.log(signal, market, result)
+            await self._decision_logger.log(signal, market, result)
 
 
 @dataclass
@@ -358,7 +368,13 @@ async def publish_market_data(
         async for event in stream:
             await bus.publish(event)
 
-    await asyncio.gather(*(publish_contract(contract) for contract in contracts))
+    results = await asyncio.gather(
+        *(publish_contract(contract) for contract in contracts),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error("Market data stream failed: %s", result)
 
 
 def _wire_risk_pipeline(

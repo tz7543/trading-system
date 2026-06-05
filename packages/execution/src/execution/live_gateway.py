@@ -26,13 +26,24 @@ class LiveGateway:
             ib_contract, ib_order = _build_bag(order)
 
         trade = self._ib.placeOrder(ib_contract, ib_order)
-        logger.info("Placed order %s for %s", trade.orderStatus.orderId, order.strategy_id)
+        logger.info(
+            "Placed order %s for %s", trade.orderStatus.orderId, order.strategy_id
+        )
         trade.filledEvent += lambda t: self._on_filled(t)
 
     def _on_filled(self, trade: ibi.Trade) -> None:
         task = asyncio.ensure_future(self._publish_fill(trade))
         self._pending_fills.add(task)
-        task.add_done_callback(self._pending_fills.discard)
+        task.add_done_callback(self._on_fill_done)
+
+    def _on_fill_done(self, task: asyncio.Task) -> None:
+        self._pending_fills.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.critical(
+                "Fill publication failed: %s",
+                task.exception(),
+                exc_info=task.exception(),
+            )
 
     async def _publish_fill(self, trade: ibi.Trade) -> None:
         legs_filled: list[Leg] = []
@@ -43,7 +54,9 @@ class LiveGateway:
             if fill.execution.side == "SLD":
                 qty = -qty
             legs_filled.append(
-                Leg(contract=contract, quantity=qty, entry_price=fill.execution.avgPrice)
+                Leg(
+                    contract=contract, quantity=qty, entry_price=fill.execution.avgPrice
+                )
             )
             if fill.commissionReport:
                 total_commission += fill.commissionReport.commission
@@ -109,8 +122,12 @@ def _to_ib_contract_with_conid(contract: Contract) -> ibi.Contract:
         c = ibi.Stock(contract.symbol, contract.exchange, contract.currency)
     elif contract.sec_type == "OPT":
         c = ibi.Option(
-            contract.symbol, contract.expiry, contract.strike,
-            contract.right, contract.exchange, currency=contract.currency,
+            contract.symbol,
+            contract.expiry,
+            contract.strike,
+            contract.right,
+            contract.exchange,
+            currency=contract.currency,
         )
     else:
         raise ValueError(f"Unsupported sec_type: {contract.sec_type}")

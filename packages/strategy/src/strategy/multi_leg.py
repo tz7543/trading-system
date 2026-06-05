@@ -11,6 +11,13 @@ def iron_condor(
     quantity: int = 1,
     strategy_id: str = "",
 ) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if not (put_buy_strike < put_sell_strike < call_sell_strike < call_buy_strike):
+        raise ValueError(
+            f"Strikes must satisfy put_buy < put_sell < call_sell < call_buy, "
+            f"got {put_buy_strike} < {put_sell_strike} < {call_sell_strike} < {call_buy_strike}"
+        )
     legs = [
         Leg(
             contract=Contract(
@@ -64,6 +71,12 @@ def bull_call_spread(
     quantity: int = 1,
     strategy_id: str = "",
 ) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if buy_strike >= sell_strike:
+        raise ValueError(
+            f"buy_strike must be less than sell_strike, got {buy_strike} >= {sell_strike}"
+        )
     legs = [
         Leg(
             contract=Contract(
@@ -96,6 +109,8 @@ def covered_call(
     quantity: int = 1,
     strategy_id: str = "",
 ) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
     legs = [
         Leg(
             contract=Contract(symbol=underlying, sec_type="STK"),
@@ -122,6 +137,8 @@ def straddle(
     quantity: int = 1,
     strategy_id: str = "",
 ) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
     legs = [
         Leg(
             contract=Contract(

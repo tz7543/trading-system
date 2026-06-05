@@ -20,30 +20,51 @@ def _make_mock_ib():
 
 
 def _stk_order_event():
-    legs = [Leg(contract=Contract(symbol="AAPL", sec_type="STK", con_id=265598), quantity=100)]
+    legs = [
+        Leg(
+            contract=Contract(symbol="AAPL", sec_type="STK", con_id=265598),
+            quantity=100,
+        )
+    ]
     order = Order(legs=legs, strategy_id="test", order_type="LMT", limit_price=150.0)
-    return OrderEvent(order=order, timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC), approved_by="risk")
+    return OrderEvent(
+        order=order,
+        timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC),
+        approved_by="risk",
+    )
 
 
 def _bag_order_event():
     legs = [
         Leg(
             contract=Contract(
-                symbol="AAPL", sec_type="OPT", expiry="20260620",
-                strike=150.0, right="C", con_id=100001,
+                symbol="AAPL",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=150.0,
+                right="C",
+                con_id=100001,
             ),
             quantity=-1,
         ),
         Leg(
             contract=Contract(
-                symbol="AAPL", sec_type="OPT", expiry="20260620",
-                strike=155.0, right="C", con_id=100002,
+                symbol="AAPL",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=155.0,
+                right="C",
+                con_id=100002,
             ),
             quantity=1,
         ),
     ]
     order = Order(legs=legs, strategy_id="test", order_type="LMT", limit_price=-0.50)
-    return OrderEvent(order=order, timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC), approved_by="risk")
+    return OrderEvent(
+        order=order,
+        timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC),
+        approved_by="risk",
+    )
 
 
 @pytest.mark.asyncio
