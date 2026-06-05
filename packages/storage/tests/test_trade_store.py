@@ -1,9 +1,9 @@
-import pytest
 from datetime import UTC, datetime
+
+import pytest
 
 from core.events import FillEvent, OrderEvent
 from core.models import Contract, Leg, Order
-
 from storage.trade_store import TradeStore
 
 

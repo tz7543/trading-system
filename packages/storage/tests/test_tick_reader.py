@@ -3,10 +3,8 @@ from datetime import UTC, datetime
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from core.events import MarketEvent
 from core.models import Contract
 from core.partitions import tick_partition_path
-
 from storage.tick_reader import TickReader
 from storage.tick_schema import TICK_SCHEMA
 
@@ -60,9 +58,7 @@ def _opt_row(ts=None, delta=0.55):
 
 def test_read_stk_events(tmp_path):
     contract = Contract(symbol="AAPL", sec_type="STK")
-    _write_parquet(
-        tick_partition_path(tmp_path, contract, "2026-06-04"), [_stk_row()]
-    )
+    _write_parquet(tick_partition_path(tmp_path, contract, "2026-06-04"), [_stk_row()])
     reader = TickReader(tmp_path)
     events = reader.read(contract)
     assert len(events) == 1
@@ -79,9 +75,7 @@ def test_read_opt_with_greeks(tmp_path):
         strike=150.0,
         right="C",
     )
-    _write_parquet(
-        tick_partition_path(tmp_path, contract, "2026-06-04"), [_opt_row()]
-    )
+    _write_parquet(tick_partition_path(tmp_path, contract, "2026-06-04"), [_opt_row()])
     reader = TickReader(tmp_path)
     events = reader.read(contract)
     assert len(events) == 1
@@ -135,9 +129,7 @@ def test_read_empty_returns_empty(tmp_path):
 
 def test_read_date_filter(tmp_path):
     contract = Contract(symbol="AAPL", sec_type="STK")
-    _write_parquet(
-        tick_partition_path(tmp_path, contract, "2026-06-04"), [_stk_row()]
-    )
+    _write_parquet(tick_partition_path(tmp_path, contract, "2026-06-04"), [_stk_row()])
     _write_parquet(
         tick_partition_path(tmp_path, contract, "2026-06-05"),
         [_stk_row(ts=datetime(2026, 6, 5, 14, 30, 0, tzinfo=UTC))],

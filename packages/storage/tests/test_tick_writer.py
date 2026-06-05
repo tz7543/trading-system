@@ -1,9 +1,9 @@
-import pytest
 from datetime import UTC, datetime
+
+import pytest
 
 from core.events import MarketEvent
 from core.models import Contract, Greeks
-
 from storage.tick_writer import TickWriter
 
 
@@ -79,9 +79,7 @@ def test_multiple_flushes_create_multiple_files(tmp_path):
     contract = Contract(symbol="AAPL", sec_type="STK")
     writer.write(_stk_event(), contract)
     writer.flush()
-    writer.write(
-        _stk_event(ts=datetime(2026, 6, 4, 14, 31, 0, tzinfo=UTC)), contract
-    )
+    writer.write(_stk_event(ts=datetime(2026, 6, 4, 14, 31, 0, tzinfo=UTC)), contract)
     writer.flush()
     partition_dir = list(tmp_path.rglob("date=*"))[0]
     files = sorted(partition_dir.glob("*.parquet"))
@@ -94,6 +92,4 @@ def test_write_after_close_raises(tmp_path):
     writer = TickWriter(tmp_path, flush_interval=1)
     writer.close()
     with pytest.raises(RuntimeError):
-        writer.write(
-            _stk_event(), Contract(symbol="AAPL", sec_type="STK")
-        )
+        writer.write(_stk_event(), Contract(symbol="AAPL", sec_type="STK"))

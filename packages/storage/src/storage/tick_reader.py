@@ -6,7 +6,6 @@ import pyarrow.dataset as ds
 from core.events import MarketEvent
 from core.models import Contract, Greeks
 from core.partitions import tick_contract_dir, tick_partition_path
-
 from storage.tick_schema import TICK_SCHEMA
 
 

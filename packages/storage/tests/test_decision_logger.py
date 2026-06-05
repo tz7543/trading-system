@@ -2,12 +2,13 @@ from datetime import UTC, datetime
 
 from core.events import MarketEvent, SignalEvent
 from core.models import Contract, Greeks, Leg, Order, ValidationResult
-
 from storage.decision_logger import DecisionLogger
 
 
 def _make_signal():
-    c = Contract(symbol="AAPL", sec_type="OPT", expiry="20260620", strike=150.0, right="C")
+    c = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260620", strike=150.0, right="C"
+    )
     order = Order(legs=[Leg(contract=c, quantity=1)], strategy_id="ic_1")
     return SignalEvent(
         strategy_id="ic_1",
@@ -28,8 +29,12 @@ def _make_market():
         last=5.20,
         volume=50,
         model_greeks=Greeks(
-            delta=0.55, gamma=0.03, vega=0.18,
-            theta=-0.05, implied_vol=0.25, underlying_price=150.15,
+            delta=0.55,
+            gamma=0.03,
+            vega=0.18,
+            theta=-0.05,
+            implied_vol=0.25,
+            underlying_price=150.15,
         ),
     )
 

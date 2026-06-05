@@ -6,7 +6,6 @@ import pyarrow.parquet as pq
 from core.events import MarketEvent
 from core.models import Contract
 from core.partitions import tick_partition_path
-
 from storage.tick_schema import TICK_SCHEMA
 
 
