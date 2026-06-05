@@ -1,7 +1,7 @@
 # Trading System 交接文件
 
 **日期：** 2026-06-05
-**狀態：** Phase 4B 完成，Phase 4C 待開始
+**狀態：** Phase 4C 完成，自動化測試通過；Paper TWS manual smoke test 待執行
 
 ---
 
@@ -17,11 +17,11 @@
 
 | 指標 | 數值 |
 |------|------|
-| Source files | 28 |
-| Test files | 27 |
+| Source files | 40 |
+| Test files | 30 |
 | Source LoC | ~1,700 |
 | Test LoC | ~2,700 |
-| Tests | 113（全部通過） |
+| Tests | 124（全部通過） |
 | Commits | 35 |
 
 ---
@@ -39,7 +39,7 @@ packages/
   tws-client/    ← IB TWS API adapter（ib_async）
   execution/     ← LiveGateway（實盤下單）
 apps/
-  trader/        ← 系統入口（尚未實作，Phase 4C）
+  trader/        ← 系統入口、config loading、live/backtest assembly
 ```
 
 依賴方向（單向無循環）：
@@ -109,16 +109,19 @@ apps/trader
 | option_chain | `tws_client/option_chain.py` | OptionChainService — chain 查詢 + qualify |
 | live_gateway | `execution/live_gateway.py` | LiveGateway — 單腿/BAG 下單 + FillEvent 發布 |
 
-### Phase 4C: App Assembly（待開始）
-
-計畫已記錄在 Phase 4B plan 底部：
+### Phase 4C: App Assembly（已完成）
 
 | Task | 說明 |
 |------|------|
-| 4C.1 | Config loading（config.toml → Pydantic model） |
-| 4C.2 | Live mode assembly（EventBus wiring，包括 `bus.subscribe(OrderEvent, gateway.on_order)`） |
-| 4C.3 | Backtest mode assembly（同一策略代碼，替換 DataHandler + Executor） |
-| 4C.4 | Integration test（完整 pipeline：backtest + risk + storage） |
+| 4C.1 | Config loading（`config.toml` → Pydantic `TraderConfig`） |
+| 4C.2 | Risk pipeline handler（`SignalEvent` → `PreTradeValidator` → `DecisionLogger` → `OrderEvent`） |
+| 4C.3 | Live mode assembly（EventBus wiring，包括 `bus.subscribe(OrderEvent, gateway.on_order)`） |
+| 4C.4 | Backtest mode assembly（同一策略代碼，替換 `HistoricalDataHandler` + `SimulatedExecutor`） |
+| 4C.5 | Integration test（完整 pipeline：backtest + risk + execution + storage） |
+| 4C.6 | RealTimeMonitor + CircuitBreaker wiring（FillEvent 後監控 alert，熔斷後阻擋新 signal） |
+| 4C.7 | Live quote publishing（`LiveDataHandler.subscribe_quote()` → `EventBus.publish(MarketEvent)`） |
+| 4C.8 | Strategy loading + CLI（`module:Class` 載入策略，`main.py validate-config/backtest/live`） |
+| 4C.9 | AppRiskState（fill-derived positions、`context["proposed_greeks"]` 風控 provider） |
 
 ---
 
@@ -171,7 +174,7 @@ ib_async 的 `Ticker.updateEvent` 是 eventkit 同步 callback。橋接模式：
 
 ### 5.8 LiveGateway bus 訂閱延遲到 Phase 4C
 
-`LiveGateway.__init__` **不會** 呼叫 `bus.subscribe(OrderEvent, self.on_order)`。Bus wiring 在 Phase 4C 的 apps/trader 組裝階段完成。與 `SimulatedExecutor` 一致（runner 直接呼叫 `executor.on_order()`）。
+`LiveGateway.__init__` **不會** 呼叫 `bus.subscribe(OrderEvent, self.on_order)`。Bus wiring 已在 Phase 4C 的 apps/trader 組裝階段完成。與 `SimulatedExecutor` 一致（runner 直接呼叫 `executor.on_order()`）。
 
 ---
 
@@ -299,13 +302,8 @@ packages/storage/src/storage/
 
 ---
 
-## 10. 下一步：Phase 4C
+## 10. 下一步：Manual Paper TWS Smoke Test
 
-Phase 4C 是最後的組裝階段，把所有 package 連接成可運行的系統：
-
-1. **Config loading** — `apps/trader/config.toml` → Pydantic model（TWS 連線參數、風控限額、策略參數）
-2. **Live mode assembly** — 建立 `IB()` → `ConnectionManager` → `LiveDataHandler` → `LiveGateway`，wiring EventBus（包括 `bus.subscribe(OrderEvent, gateway.on_order)`）
-3. **Backtest mode assembly** — 同一策略代碼，替換 `HistoricalDataHandler` + `SimulatedExecutor`
-4. **Integration test** — 完整 pipeline：market data → strategy → risk → execution → storage
-
-完成 Phase 4C 後，需執行上述 manual smoke-test checklist 驗證 IB 連線。
+Phase 4C app runtime 與自動化測試已完成。下一步是用 Paper TWS 執行上述
+manual smoke-test checklist，驗證真實 IB 連線、即時報價、option chain、
+Greeks、historical pacing、單腿委託與 BAG 委託。

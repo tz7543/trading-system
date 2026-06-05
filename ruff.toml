@@ -6,4 +6,4 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 ignore = ["E501"]
 
 [lint.isort]
-known-first-party = ["core", "tws_client", "market_data", "storage", "risk", "strategy", "backtest", "execution"]
+known-first-party = ["core", "tws_client", "market_data", "storage", "risk", "strategy", "backtest", "execution", "trading_app"]

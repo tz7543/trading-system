@@ -9,5 +9,5 @@ dev-dependencies = [
 members = ["packages/*", "apps/trader"]
 
 [tool.pytest.ini_options]
-testpaths = ["packages"]
+testpaths = ["packages", "apps"]
 asyncio_mode = "auto"
