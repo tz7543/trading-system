@@ -81,7 +81,7 @@ def test_multiple_flushes_create_multiple_files(tmp_path):
     writer.flush()
     writer.write(_stk_event(ts=datetime(2026, 6, 4, 14, 31, 0, tzinfo=UTC)), contract)
     writer.flush()
-    partition_dir = list(tmp_path.rglob("date=*"))[0]
+    partition_dir = next(iter(tmp_path.rglob("date=*")))
     files = sorted(partition_dir.glob("*.parquet"))
     assert len(files) == 2
     assert files[0].name == "000000.parquet"

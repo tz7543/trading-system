@@ -63,7 +63,7 @@ class DecisionLogger:
         if result.description is None:
             return []
         cols = [d[0] for d in result.description]
-        return [dict(zip(cols, row)) for row in result.fetchall()]
+        return [dict(zip(cols, row, strict=False)) for row in result.fetchall()]
 
     def close(self) -> None:
         self._db.close()

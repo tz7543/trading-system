@@ -20,7 +20,5 @@ def tick_contract_dir(base_dir: str | Path, contract: Contract) -> Path:
     return path
 
 
-def tick_partition_path(
-    base_dir: str | Path, contract: Contract, date: str
-) -> Path:
+def tick_partition_path(base_dir: str | Path, contract: Contract, date: str) -> Path:
     return tick_contract_dir(base_dir, contract) / f"date={date}"

@@ -34,7 +34,7 @@ __all__ = [
     "RiskLimits",
     "SignalEvent",
     "SimClock",
+    "ValidationResult",
     "tick_contract_dir",
     "tick_partition_path",
-    "ValidationResult",
 ]

@@ -97,7 +97,7 @@ class TradeStore:
             cursor = await self._db.execute("SELECT * FROM orders")
         rows = await cursor.fetchall()
         cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in rows]
+        return [dict(zip(cols, row, strict=False)) for row in rows]
 
     async def query_fills(self, order_id: str | None = None) -> list[dict]:
         if order_id:
@@ -108,7 +108,7 @@ class TradeStore:
             cursor = await self._db.execute("SELECT * FROM fills")
         rows = await cursor.fetchall()
         cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in rows]
+        return [dict(zip(cols, row, strict=False)) for row in rows]
 
     async def close(self) -> None:
         if self._db:

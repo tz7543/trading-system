@@ -21,8 +21,12 @@ def test_opt_partition_path():
 
 
 def test_different_strikes_different_paths():
-    c1 = Contract(symbol="AAPL", sec_type="OPT", expiry="20260620", strike=150.0, right="C")
-    c2 = Contract(symbol="AAPL", sec_type="OPT", expiry="20260620", strike=155.0, right="C")
+    c1 = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260620", strike=150.0, right="C"
+    )
+    c2 = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260620", strike=155.0, right="C"
+    )
     p1 = tick_partition_path("/data", c1, "2026-06-04")
     p2 = tick_partition_path("/data", c2, "2026-06-04")
     assert p1 != p2
