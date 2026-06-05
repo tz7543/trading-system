@@ -105,10 +105,14 @@ version = "0.1.0"
 source = { editable = "packages/execution" }
 dependencies = [
     { name = "trading-core" },
+    { name = "tws-client" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "trading-core", editable = "packages/core" }]
+requires-dist = [
+    { name = "trading-core", editable = "packages/core" },
+    { name = "tws-client", editable = "packages/tws-client" },
+]
 
 [[package]]
 name = "ib-async"
