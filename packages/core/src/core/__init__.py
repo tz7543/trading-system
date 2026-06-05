@@ -13,6 +13,7 @@ from core.models import (
     RiskLimits,
     ValidationResult,
 )
+from core.partitions import tick_contract_dir, tick_partition_path
 
 __all__ = [
     "AlertEvent",
@@ -33,5 +34,7 @@ __all__ = [
     "RiskLimits",
     "SignalEvent",
     "SimClock",
+    "tick_contract_dir",
+    "tick_partition_path",
     "ValidationResult",
 ]
