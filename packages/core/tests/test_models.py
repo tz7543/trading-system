@@ -59,7 +59,9 @@ def test_contract_option():
 
 
 def test_leg_defaults():
-    c = Contract(symbol="AAPL", sec_type="OPT", expiry="20260117", strike=150.0, right="C")
+    c = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260117", strike=150.0, right="C"
+    )
     leg = Leg(contract=c, quantity=1)
     assert leg.entry_price == 0.0
     assert leg.quantity == 1
@@ -111,7 +113,9 @@ def test_position_defaults():
 
 
 def test_order_defaults():
-    c = Contract(symbol="AAPL", sec_type="OPT", expiry="20260117", strike=150.0, right="C")
+    c = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260117", strike=150.0, right="C"
+    )
     leg = Leg(contract=c, quantity=1)
     order = Order(legs=[leg], strategy_id="iron_condor_1")
     assert order.order_type == "LMT"

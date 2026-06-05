@@ -20,7 +20,14 @@ def test_market_event_stock():
 
 
 def test_market_event_option_with_greeks():
-    g = Greeks(delta=0.45, gamma=0.03, vega=0.12, theta=-0.05, implied_vol=0.25, underlying_price=150.0)
+    g = Greeks(
+        delta=0.45,
+        gamma=0.03,
+        vega=0.12,
+        theta=-0.05,
+        implied_vol=0.25,
+        underlying_price=150.0,
+    )
     event = MarketEvent(
         symbol="AAPL260117C00150000",
         timestamp=datetime(2026, 1, 2, 9, 30, tzinfo=UTC),
@@ -35,7 +42,9 @@ def test_market_event_option_with_greeks():
 
 
 def test_signal_event():
-    c = Contract(symbol="AAPL", sec_type="OPT", expiry="20260117", strike=150.0, right="C")
+    c = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260117", strike=150.0, right="C"
+    )
     order = Order(legs=[Leg(contract=c, quantity=1)], strategy_id="ic_1")
     event = SignalEvent(
         strategy_id="ic_1",
