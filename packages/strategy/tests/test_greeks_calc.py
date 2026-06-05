@@ -1,26 +1,31 @@
 from core.models import Contract, Greeks, Leg
-
 from strategy.greeks_calc import GreeksCalculator
 
 
 def test_composite_single_opt():
     leg = Leg(
         contract=Contract(
-            symbol="AAPL260620C00150000", sec_type="OPT",
-            expiry="20260620", strike=150.0, right="C",
+            symbol="AAPL260620C00150000",
+            sec_type="OPT",
+            expiry="20260620",
+            strike=150.0,
+            right="C",
         ),
         quantity=1,
     )
     greeks_map = {
         "AAPL260620C00150000": Greeks(
-            delta=0.50, gamma=0.03, vega=0.18, theta=-0.05,
+            delta=0.50,
+            gamma=0.03,
+            vega=0.18,
+            theta=-0.05,
         ),
     }
     result = GreeksCalculator.composite([leg], greeks_map)
-    assert result.delta == 50.0   # 0.50 * 1 * 100
-    assert result.gamma == 3.0    # 0.03 * 1 * 100
-    assert result.vega == 18.0    # 0.18 * 1 * 100
-    assert result.theta == -5.0   # -0.05 * 1 * 100
+    assert result.delta == 50.0  # 0.50 * 1 * 100
+    assert result.gamma == 3.0  # 0.03 * 1 * 100
+    assert result.vega == 18.0  # 0.18 * 1 * 100
+    assert result.theta == -5.0  # -0.05 * 1 * 100
 
 
 def test_composite_covered_call():
@@ -31,8 +36,11 @@ def test_composite_covered_call():
     )
     call_leg = Leg(
         contract=Contract(
-            symbol="AAPL260620C00150000", sec_type="OPT",
-            expiry="20260620", strike=150.0, right="C",
+            symbol="AAPL260620C00150000",
+            sec_type="OPT",
+            expiry="20260620",
+            strike=150.0,
+            right="C",
         ),
         quantity=-1,
     )
@@ -47,10 +55,46 @@ def test_composite_covered_call():
 
 def test_composite_iron_condor():
     legs = [
-        Leg(contract=Contract(symbol="IC_P_BUY", sec_type="OPT", expiry="20260620", strike=140.0, right="P"), quantity=1),
-        Leg(contract=Contract(symbol="IC_P_SELL", sec_type="OPT", expiry="20260620", strike=145.0, right="P"), quantity=-1),
-        Leg(contract=Contract(symbol="IC_C_SELL", sec_type="OPT", expiry="20260620", strike=155.0, right="C"), quantity=-1),
-        Leg(contract=Contract(symbol="IC_C_BUY", sec_type="OPT", expiry="20260620", strike=160.0, right="C"), quantity=1),
+        Leg(
+            contract=Contract(
+                symbol="IC_P_BUY",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=140.0,
+                right="P",
+            ),
+            quantity=1,
+        ),
+        Leg(
+            contract=Contract(
+                symbol="IC_P_SELL",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=145.0,
+                right="P",
+            ),
+            quantity=-1,
+        ),
+        Leg(
+            contract=Contract(
+                symbol="IC_C_SELL",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=155.0,
+                right="C",
+            ),
+            quantity=-1,
+        ),
+        Leg(
+            contract=Contract(
+                symbol="IC_C_BUY",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=160.0,
+                right="C",
+            ),
+            quantity=1,
+        ),
     ]
     greeks_map = {
         "IC_P_BUY": Greeks(delta=-0.15, gamma=0.02, vega=0.10, theta=-0.03),
@@ -66,8 +110,26 @@ def test_composite_iron_condor():
 
 def test_composite_missing_greeks():
     legs = [
-        Leg(contract=Contract(symbol="AAPL260620C00150000", sec_type="OPT", expiry="20260620", strike=150.0, right="C"), quantity=1),
-        Leg(contract=Contract(symbol="MISSING", sec_type="OPT", expiry="20260620", strike=160.0, right="C"), quantity=1),
+        Leg(
+            contract=Contract(
+                symbol="AAPL260620C00150000",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=150.0,
+                right="C",
+            ),
+            quantity=1,
+        ),
+        Leg(
+            contract=Contract(
+                symbol="MISSING",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=160.0,
+                right="C",
+            ),
+            quantity=1,
+        ),
     ]
     greeks_map = {
         "AAPL260620C00150000": Greeks(delta=0.50, gamma=0.03),
