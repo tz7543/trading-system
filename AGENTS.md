@@ -15,9 +15,6 @@ Define a verifiable goal for each behavior change, then run the focused check
 that proves it. For documentation-only changes, verify links, paths, and config
 syntax instead of running unrelated test suites.
 
-When operating through Codex in this environment, prefix shell commands with
-`rtk`. See @/Users/sunpeizhi/.codex/RTK.md.
-
 ## Project Overview
 
 This is a Python 3.11+ `uv` workspace for a US equities/options trading system
