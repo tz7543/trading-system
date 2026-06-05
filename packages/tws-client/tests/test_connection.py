@@ -1,4 +1,3 @@
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -36,7 +35,9 @@ async def test_auto_reconnect_on_disconnect():
     await mgr.connect()
     ib.connectAsync.reset_mock()
 
-    with patch("tws_client.connection.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+    with patch(
+        "tws_client.connection.asyncio.sleep", new_callable=AsyncMock
+    ) as mock_sleep:
         ib.disconnectedEvent.emit()
         assert mgr._reconnect_task is not None
         await mgr._reconnect_task
