@@ -162,3 +162,120 @@ def straddle(
         ),
     ]
     return Order(legs=legs, strategy_id=strategy_id)
+
+
+def bear_put_spread(
+    underlying: str,
+    expiry: str,
+    buy_strike: float,
+    sell_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if buy_strike <= sell_strike:
+        raise ValueError(
+            f"buy_strike must be greater than sell_strike, got {buy_strike} <= {sell_strike}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=buy_strike,
+                right="P",
+            ),
+            quantity=quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=sell_strike,
+                right="P",
+            ),
+            quantity=-quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def bull_put_spread(
+    underlying: str,
+    expiry: str,
+    sell_strike: float,
+    buy_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if sell_strike <= buy_strike:
+        raise ValueError(
+            f"sell_strike must be greater than buy_strike, got {sell_strike} <= {buy_strike}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=sell_strike,
+                right="P",
+            ),
+            quantity=-quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=buy_strike,
+                right="P",
+            ),
+            quantity=quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def bear_call_spread(
+    underlying: str,
+    expiry: str,
+    sell_strike: float,
+    buy_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if sell_strike >= buy_strike:
+        raise ValueError(
+            f"sell_strike must be less than buy_strike, got {sell_strike} >= {buy_strike}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=sell_strike,
+                right="C",
+            ),
+            quantity=-quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=buy_strike,
+                right="C",
+            ),
+            quantity=quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
