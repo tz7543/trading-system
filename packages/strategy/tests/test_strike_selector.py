@@ -174,3 +174,83 @@ def test_select_strike_fallback_with_offset():
         offset=1,
     )
     assert result == 155.0
+
+
+def test_iron_condor_strike_selection():
+    """Simulate selecting 4 strikes for an Iron Condor using delta targets."""
+    strikes = [
+        130.0,
+        135.0,
+        140.0,
+        145.0,
+        147.5,
+        150.0,
+        152.5,
+        155.0,
+        160.0,
+        165.0,
+        170.0,
+    ]
+    underlying_price = 150.0
+    call_greeks = {
+        130.0: Greeks(delta=0.95),
+        135.0: Greeks(delta=0.90),
+        140.0: Greeks(delta=0.80),
+        145.0: Greeks(delta=0.65),
+        147.5: Greeks(delta=0.55),
+        150.0: Greeks(delta=0.50),
+        152.5: Greeks(delta=0.40),
+        155.0: Greeks(delta=0.30),
+        160.0: Greeks(delta=0.16),
+        165.0: Greeks(delta=0.08),
+        170.0: Greeks(delta=0.03),
+    }
+    put_greeks = {
+        130.0: Greeks(delta=-0.05),
+        135.0: Greeks(delta=-0.10),
+        140.0: Greeks(delta=-0.20),
+        145.0: Greeks(delta=-0.35),
+        147.5: Greeks(delta=-0.45),
+        150.0: Greeks(delta=-0.50),
+        152.5: Greeks(delta=-0.60),
+        155.0: Greeks(delta=-0.70),
+        160.0: Greeks(delta=-0.84),
+        165.0: Greeks(delta=-0.92),
+        170.0: Greeks(delta=-0.97),
+    }
+
+    call_sell = select_strike(
+        strikes,
+        underlying_price,
+        right="C",
+        target_delta=0.16,
+        greeks_map=call_greeks,
+    )
+    call_buy = select_strike(
+        strikes,
+        underlying_price,
+        right="C",
+        target_delta=0.05,
+        greeks_map=call_greeks,
+    )
+    put_sell = select_strike(
+        strikes,
+        underlying_price,
+        right="P",
+        target_delta=0.16,
+        greeks_map=put_greeks,
+    )
+    put_buy = select_strike(
+        strikes,
+        underlying_price,
+        right="P",
+        target_delta=0.05,
+        greeks_map=put_greeks,
+    )
+
+    assert call_sell == 160.0
+    assert call_buy == 170.0
+    assert put_sell == 140.0
+    assert put_buy == 130.0
+
+    assert put_buy < put_sell < call_sell < call_buy
