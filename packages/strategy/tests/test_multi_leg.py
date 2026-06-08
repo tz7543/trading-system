@@ -337,6 +337,17 @@ def test_iron_butterfly_invalid_strikes():
         )
 
 
+def test_iron_butterfly_non_equidistant():
+    with pytest.raises(ValueError, match="wings must be equidistant"):
+        iron_butterfly(
+            underlying="AAPL",
+            expiry="20260620",
+            put_buy_strike=140.0,
+            middle_strike=150.0,
+            call_buy_strike=165.0,
+        )
+
+
 def test_collar():
     order = collar(
         underlying="AAPL",
@@ -385,6 +396,16 @@ def test_protective_put():
     assert order.legs[1].quantity == 2
 
 
+def test_protective_put_invalid_quantity():
+    with pytest.raises(ValueError, match="quantity must be >= 1"):
+        protective_put(
+            underlying="AAPL",
+            expiry="20260620",
+            put_strike=145.0,
+            quantity=0,
+        )
+
+
 def test_cash_secured_put():
     order = cash_secured_put(
         underlying="AAPL",
@@ -398,6 +419,16 @@ def test_cash_secured_put():
     assert order.legs[0].contract.strike == 145.0
     assert order.legs[0].contract.right == "P"
     assert order.legs[0].quantity == -3
+
+
+def test_cash_secured_put_invalid_quantity():
+    with pytest.raises(ValueError, match="quantity must be >= 1"):
+        cash_secured_put(
+            underlying="AAPL",
+            expiry="20260620",
+            strike=145.0,
+            quantity=0,
+        )
 
 
 def test_calendar_spread_calls():

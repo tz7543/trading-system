@@ -450,6 +450,11 @@ def iron_butterfly(
             f"Strikes must satisfy put_buy < middle < call_buy, "
             f"got {put_buy_strike}, {middle_strike}, {call_buy_strike}"
         )
+    if abs((middle_strike - put_buy_strike) - (call_buy_strike - middle_strike)) > 1e-9:
+        raise ValueError(
+            f"wings must be equidistant from middle, "
+            f"got {middle_strike - put_buy_strike} vs {call_buy_strike - middle_strike}"
+        )
     legs = [
         Leg(
             contract=Contract(
