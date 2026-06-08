@@ -49,3 +49,6 @@ logs/
 # IB / broker config
 tws_settings/
 ibapi_config.ini
+
+# Graphify output (large generated files)
+graphify-out/
