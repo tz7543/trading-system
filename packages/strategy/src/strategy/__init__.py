@@ -18,6 +18,12 @@ from strategy.multi_leg import (
     straddle,
     strangle,
 )
+from strategy.strike_selector import (
+    filter_strikes,
+    select_atm,
+    select_by_delta,
+    select_strike,
+)
 
 __all__ = [
     "BaseStrategy",
@@ -32,10 +38,14 @@ __all__ = [
     "collar",
     "covered_call",
     "diagonal_spread",
+    "filter_strikes",
     "iron_butterfly",
     "iron_condor",
     "protective_put",
     "put_butterfly",
+    "select_atm",
+    "select_by_delta",
+    "select_strike",
     "straddle",
     "strangle",
 ]
