@@ -1,7 +1,14 @@
 from core.bus import EventBus
 from core.clock import Clock, LiveClock, SimClock
 from core.data_handler import DataHandler
-from core.events import AlertEvent, FillEvent, MarketEvent, OrderEvent, SignalEvent
+from core.events import (
+    AlertEvent,
+    AssignmentEvent,
+    FillEvent,
+    MarketEvent,
+    OrderEvent,
+    SignalEvent,
+)
 from core.models import (
     Bar,
     Contract,
@@ -17,6 +24,7 @@ from core.partitions import tick_contract_dir, tick_partition_path
 
 __all__ = [
     "AlertEvent",
+    "AssignmentEvent",
     "Bar",
     "Clock",
     "Contract",

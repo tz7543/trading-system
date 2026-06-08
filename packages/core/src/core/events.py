@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from core.models import Bar, Greeks, Leg, Order
+from core.models import Bar, Contract, Greeks, Leg, Order
 
 
 @dataclass
@@ -43,6 +43,17 @@ class FillEvent:
     legs_filled: list[Leg]
     timestamp: datetime
     commission: float
+
+
+@dataclass
+class AssignmentEvent:
+    strategy_id: str
+    timestamp: datetime
+    assigned_contract: Contract
+    contracts_assigned: int
+    stock_quantity: int
+    account: str = ""
+    underlying_price: float = 0.0
 
 
 @dataclass

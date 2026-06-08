@@ -13,6 +13,7 @@ from core.events import AlertEvent, FillEvent, MarketEvent, OrderEvent, SignalEv
 from core.models import Contract, Greeks, Leg, Order, RiskLimits
 from core.partitions import tick_partition_path
 from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
+from strategy import DeltaHedgeStrategy
 from strategy.base import BaseStrategy
 from trading_app.assembly import (
     AppRiskState,
@@ -165,6 +166,56 @@ async def test_live_app_wires_order_events_to_gateway(tmp_path):
         )
 
         ib.placeOrder.assert_called_once()
+    finally:
+        await app.close()
+
+
+@pytest.mark.asyncio
+async def test_live_app_wires_delta_hedge_adjust_signal_to_gateway(tmp_path):
+    ib = MagicMock()
+    ib.disconnect = MagicMock()
+    ib.isConnected = MagicMock(return_value=False)
+    ib.disconnectedEvent = ev.Event("disconnectedEvent")
+    trade = MagicMock()
+    trade.orderStatus.orderId = 8
+    trade.filledEvent = ev.Event("filledEvent")
+    ib.placeOrder.return_value = trade
+    config = TraderConfig(
+        storage=StorageConfig(
+            ticks_dir=tmp_path / "ticks",
+            decision_db=tmp_path / "decisions.duckdb",
+            trade_db=tmp_path / "orders.db",
+        )
+    )
+    contract = Contract(symbol="AAPL", sec_type="STK")
+
+    app = await build_live_app(config, ib=ib, contracts=[contract])
+    try:
+        strategy = DeltaHedgeStrategy(
+            strategy_id="delta-hedge",
+            bus=app.bus,
+            clock=app.clock,
+            hedge_symbol="AAPL",
+            greeks_provider=lambda: Greeks(delta=125.0),
+            delta_threshold=25.0,
+        )
+        subscribe_strategy(app.bus, strategy)
+
+        await app.bus.publish(
+            MarketEvent(
+                symbol="AAPL",
+                timestamp=app.clock.now(),
+                bid=149.95,
+                ask=150.05,
+                last=150.0,
+                volume=1000,
+            )
+        )
+
+        ib.placeOrder.assert_called_once()
+        ib_order = ib.placeOrder.call_args[0][1]
+        assert ib_order.action == "SELL"
+        assert ib_order.totalQuantity == 125
     finally:
         await app.close()
 

@@ -8,7 +8,7 @@ from eventkit import Event
 
 from core.bus import EventBus
 from core.clock import LiveClock
-from core.events import FillEvent, OrderEvent
+from core.events import AssignmentEvent, FillEvent, OrderEvent
 from core.models import Contract, Leg, Order
 from execution.live_gateway import LiveGateway
 
@@ -160,3 +160,40 @@ async def test_fill_publishes_fill_event():
     assert received[0].order_id == "1"
     assert received[0].legs_filled[0].entry_price == 150.5
     assert received[0].commission == 1.00
+
+
+@pytest.mark.asyncio
+async def test_on_assignment_publishes_assignment_event():
+    mock_ib = _make_mock_ib()
+    bus = EventBus()
+    clock = LiveClock()
+    received: list[AssignmentEvent] = []
+
+    async def capture(event: AssignmentEvent) -> None:
+        received.append(event)
+
+    bus.subscribe(AssignmentEvent, capture)
+    gateway = LiveGateway(bus, clock, mock_ib)
+    assigned_contract = Contract(
+        symbol="AAPL",
+        sec_type="OPT",
+        expiry="20260620",
+        strike=145.0,
+        right="P",
+    )
+
+    await gateway.on_assignment(
+        strategy_id="short-put",
+        assigned_contract=assigned_contract,
+        contracts_assigned=1,
+        account="DU123",
+        underlying_price=144.50,
+    )
+
+    assert len(received) == 1
+    assert received[0].strategy_id == "short-put"
+    assert received[0].assigned_contract == assigned_contract
+    assert received[0].contracts_assigned == 1
+    assert received[0].stock_quantity == 100
+    assert received[0].account == "DU123"
+    assert received[0].underlying_price == 144.50

@@ -67,37 +67,85 @@
 
 ---
 
-## 三、未完成的工作（按優先順序）
+## 三、延續工作完成狀態（2026-06-08）
 
-深度研究識別了 4 項高價值增強，已完成前 1 項，剩餘 3 項各需獨立的
-brainstorming → spec → plan → implementation 循環。
+深度研究識別了 4 項高價值增強。原始交接時已完成 A，後續已完成 B、C、D
+的 spec → plan → implementation → verification 循環。
 
-### B. Greeks 部位管理（下一個）
+### B. Greeks 部位管理（已完成）
 
-**現況：** `RealTimeMonitor` 已有 delta/vega 漂移監控和告警，但只做監控不做動作。
-**缺什麼：**
-- Delta-neutral rebalance 邏輯（計算對沖數量 → 提交調整訂單）
-- Gamma-aware 再平衡頻率控制（Gamma 越高 → 越頻繁調整）
-- `SignalEvent.direction="ADJUST"` 已支援，但沒有策略邏輯觸發它
-**依賴：** `LiveGateway`（execution）需已可用才能測試完整 adjust 流程
+**新增檔案：**
+- `docs/superpowers/specs/2026-06-08-greeks-position-management-design.md`
+- `docs/superpowers/plans/2026-06-08-greeks-position-management.md`
+- `packages/strategy/src/strategy/delta_hedge.py`
+- `packages/strategy/tests/test_delta_hedge.py`
 
-### C. IV Rank / IV Percentile 進場邏輯
+**完成內容：**
+- `DeltaHedgeStrategy` 透過注入的 `greeks_provider` 讀取組合 Greeks。
+- 計算 delta-neutral 股票對沖數量：`round(target_delta - current_delta)`。
+- 以 `SignalEvent.direction="ADJUST"` 發出調整訊號。
+- 訊號 context 包含 `proposed_greeks`，讓既有 `PreTradeValidator` 驗證調整後 delta。
+- Gamma-aware cooldown：高 gamma 使用較短再平衡間隔。
+- `apps/trader/tests/test_assembly.py` 驗證 `ADJUST` 訊號可走到 live app 的 `LiveGateway` mock 下單路徑。
 
-**現況：** `HistoricalDataHandler` 存 tick 資料含 `model_iv`，但只來自 live push。
-**缺什麼：**
-- 52 週 IV 歷史資料來源（IB `reqHistoricalData` 不直接提供 IV 歷史）
-- IV Rank 和 IV Percentile 計算模組
-- 策略進場訊號整合（IV Rank > 70 → 適合賣權策略）
-**阻塞：** 需先決定 IV 歷史資料來源（自行蒐集 vs 外部資料）
+### C. IV Rank / IV Percentile 進場邏輯（已完成）
 
-### D. Rolling / 提前行權處理
+**新增檔案：**
+- `docs/superpowers/specs/2026-06-08-iv-rank-entry-design.md`
+- `docs/superpowers/plans/2026-06-08-iv-rank-entry.md`
+- `packages/strategy/src/strategy/iv_metrics.py`
+- `packages/strategy/src/strategy/iv_entry.py`
+- `packages/strategy/tests/test_iv_metrics.py`
+- `packages/strategy/tests/test_iv_entry.py`
 
-**現況：** 無相關事件類型或邏輯。
-**缺什麼：**
-- `AssignmentEvent` 事件類型
-- Roll-leg 建構器（關閉到期腿 + 開啟下期腿）
-- 部位重組邏輯（partial assignment 偵測）
-**依賴：** 需 execution 層的 assignment callback 支援
+**完成內容：**
+- 資料來源決策：第一版使用本系統自行累積的 option tick `model_iv` 歷史；
+  `storage.TickReader` 與 `market_data.HistoricalDataHandler` 已能讀回
+  `MarketEvent.model_greeks.implied_vol`。外部 IV vendor 留作後續 provider。
+- `IVMetrics` dataclass。
+- `calculate_iv_rank()`、`calculate_iv_percentile()`、`calculate_iv_metrics()`。
+- 指標使用 0-100 scale，符合 `IV Rank > 70` 的策略語義。
+- `IVRankEntryStrategy` 在高 IV Rank 時透過注入的 order factory 發出 `ENTER` 訊號。
+- strategy 不依賴 `storage`、`market-data`、IB 或 live/backtest mode。
+
+### D. Rolling / 提前行權處理（已完成第一版 primitives）
+
+**新增/修改檔案：**
+- `docs/superpowers/specs/2026-06-08-assignment-rolling-design.md`
+- `docs/superpowers/plans/2026-06-08-assignment-rolling.md`
+- `core.events.AssignmentEvent`
+- `packages/strategy/src/strategy/assignment.py`
+- `packages/strategy/tests/test_assignment.py`
+- `LiveGateway.on_assignment()`
+
+**完成內容：**
+- 新增 `AssignmentEvent`，包含 assigned contract、assigned contracts、stock quantity、
+  account 與 underlying price。
+- `assignment_stock_quantity()` 依 short call/put assignment 語義計算股票交割數量。
+- `apply_assignment()` 更新 `Position`：減少被 assignment 的 short option 腿，並新增或合併股票腿。
+- `is_partial_assignment()` 偵測部分 assignment。
+- `build_roll_order()` 建立 close existing leg + open replacement leg 的兩腿 roll order。
+- `LiveGateway.on_assignment()` 提供 execution 層 typed assignment event 發布 hook。
+
+**仍留待後續 live smoke test：**
+- 自動從 IB `execDetailsEvent` / `positionEvent` 推斷 assignment 的 adapter。此版已提供
+  typed event 與 gateway hook，避免在未驗證 IB callback 細節前寫入不可靠推斷邏輯。
+
+### Verification
+
+```
+uv run pytest packages/core/tests packages/strategy/tests packages/execution/tests -q
+# 127 passed
+
+uv run pytest -q
+# 204 passed
+
+uv run ruff check .
+# All checks passed
+
+uv run ruff format --check .
+# 82 files already formatted
+```
 
 ---
 

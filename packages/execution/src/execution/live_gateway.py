@@ -5,7 +5,7 @@ import ib_async as ibi
 
 from core.bus import EventBus
 from core.clock import Clock
-from core.events import FillEvent, OrderEvent
+from core.events import AssignmentEvent, FillEvent, OrderEvent
 from core.models import Contract, Leg
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,28 @@ class LiveGateway:
             commission=total_commission,
         )
         await self._bus.publish(fill_event)
+
+    async def on_assignment(
+        self,
+        strategy_id: str,
+        assigned_contract: Contract,
+        contracts_assigned: int,
+        account: str = "",
+        underlying_price: float = 0.0,
+    ) -> None:
+        event = AssignmentEvent(
+            strategy_id=strategy_id,
+            timestamp=self._clock.now(),
+            assigned_contract=assigned_contract,
+            contracts_assigned=contracts_assigned,
+            stock_quantity=_assignment_stock_quantity(
+                assigned_contract,
+                contracts_assigned,
+            ),
+            account=account,
+            underlying_price=underlying_price,
+        )
+        await self._bus.publish(event)
 
 
 def _build_single_leg(order) -> tuple[ibi.Contract, ibi.Order]:
@@ -148,3 +170,19 @@ def _from_ib_contract(ib_contract: ibi.Contract) -> Contract:
         right=getattr(ib_contract, "right", ""),
         con_id=ib_contract.conId,
     )
+
+
+def _assignment_stock_quantity(
+    assigned_contract: Contract,
+    contracts_assigned: int,
+) -> int:
+    if assigned_contract.sec_type != "OPT":
+        raise ValueError("assigned_contract must be an option")
+    if contracts_assigned < 1:
+        raise ValueError("contracts_assigned must be >= 1")
+    shares = contracts_assigned * assigned_contract.multiplier
+    if assigned_contract.right == "P":
+        return shares
+    if assigned_contract.right == "C":
+        return -shares
+    raise ValueError("assigned_contract right must be C or P")

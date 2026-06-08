@@ -1,6 +1,13 @@
 from datetime import UTC, datetime
 
-from core.events import AlertEvent, FillEvent, MarketEvent, OrderEvent, SignalEvent
+from core.events import (
+    AlertEvent,
+    AssignmentEvent,
+    FillEvent,
+    MarketEvent,
+    OrderEvent,
+    SignalEvent,
+)
 from core.models import Contract, Greeks, Leg, Order
 
 
@@ -81,6 +88,30 @@ def test_fill_event():
     assert event.order_id == "ORD-001"
     assert event.commission == 1.0
     assert event.legs_filled[0].entry_price == 150.0
+
+
+def test_assignment_event():
+    contract = Contract(
+        symbol="AAPL",
+        sec_type="OPT",
+        expiry="20260117",
+        strike=145.0,
+        right="P",
+    )
+    event = AssignmentEvent(
+        strategy_id="short-put",
+        timestamp=datetime(2026, 1, 17, 21, 0, tzinfo=UTC),
+        assigned_contract=contract,
+        contracts_assigned=1,
+        stock_quantity=100,
+        account="DU123",
+        underlying_price=144.50,
+    )
+    assert event.assigned_contract == contract
+    assert event.contracts_assigned == 1
+    assert event.stock_quantity == 100
+    assert event.account == "DU123"
+    assert event.underlying_price == 144.50
 
 
 def test_alert_event():
