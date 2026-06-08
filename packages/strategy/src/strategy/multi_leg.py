@@ -1,3 +1,5 @@
+from typing import Literal
+
 from core.models import Contract, Leg, Order
 
 
@@ -583,6 +585,87 @@ def cash_secured_put(
                 right="P",
             ),
             quantity=-quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def calendar_spread(
+    underlying: str,
+    strike: float,
+    near_expiry: str,
+    far_expiry: str,
+    right: Literal["C", "P"] = "C",
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if near_expiry == far_expiry:
+        raise ValueError(
+            f"near_expiry must differ from far_expiry, both are {near_expiry}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=near_expiry,
+                strike=strike,
+                right=right,
+            ),
+            quantity=-quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=far_expiry,
+                strike=strike,
+                right=right,
+            ),
+            quantity=quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def diagonal_spread(
+    underlying: str,
+    near_expiry: str,
+    near_strike: float,
+    far_expiry: str,
+    far_strike: float,
+    right: Literal["C", "P"] = "C",
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if near_expiry == far_expiry:
+        raise ValueError(
+            f"near_expiry must differ from far_expiry, both are {near_expiry}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=near_expiry,
+                strike=near_strike,
+                right=right,
+            ),
+            quantity=-quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=far_expiry,
+                strike=far_strike,
+                right=right,
+            ),
+            quantity=quantity,
         ),
     ]
     return Order(legs=legs, strategy_id=strategy_id)

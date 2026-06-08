@@ -5,10 +5,12 @@ from strategy.multi_leg import (
     bear_put_spread,
     bull_call_spread,
     bull_put_spread,
+    calendar_spread,
     call_butterfly,
     cash_secured_put,
     collar,
     covered_call,
+    diagonal_spread,
     iron_butterfly,
     iron_condor,
     protective_put,
@@ -396,3 +398,88 @@ def test_cash_secured_put():
     assert order.legs[0].contract.strike == 145.0
     assert order.legs[0].contract.right == "P"
     assert order.legs[0].quantity == -3
+
+
+def test_calendar_spread_calls():
+    order = calendar_spread(
+        underlying="AAPL",
+        strike=150.0,
+        near_expiry="20260620",
+        far_expiry="20260718",
+        right="C",
+        quantity=1,
+        strategy_id="cal_1",
+    )
+    assert len(order.legs) == 2
+    assert order.strategy_id == "cal_1"
+    assert order.legs[0].contract.expiry == "20260620"
+    assert order.legs[0].contract.strike == 150.0
+    assert order.legs[0].contract.right == "C"
+    assert order.legs[0].quantity == -1
+    assert order.legs[1].contract.expiry == "20260718"
+    assert order.legs[1].contract.strike == 150.0
+    assert order.legs[1].contract.right == "C"
+    assert order.legs[1].quantity == 1
+
+
+def test_calendar_spread_puts():
+    order = calendar_spread(
+        underlying="AAPL",
+        strike=150.0,
+        near_expiry="20260620",
+        far_expiry="20260718",
+        right="P",
+        quantity=2,
+        strategy_id="cal_2",
+    )
+    assert len(order.legs) == 2
+    assert order.legs[0].contract.right == "P"
+    assert order.legs[0].quantity == -2
+    assert order.legs[1].contract.right == "P"
+    assert order.legs[1].quantity == 2
+
+
+def test_calendar_spread_same_expiry():
+    with pytest.raises(ValueError, match="near_expiry must differ from far_expiry"):
+        calendar_spread(
+            underlying="AAPL",
+            strike=150.0,
+            near_expiry="20260620",
+            far_expiry="20260620",
+            right="C",
+        )
+
+
+def test_diagonal_spread():
+    order = diagonal_spread(
+        underlying="AAPL",
+        near_expiry="20260620",
+        near_strike=155.0,
+        far_expiry="20260718",
+        far_strike=150.0,
+        right="C",
+        quantity=1,
+        strategy_id="diag_1",
+    )
+    assert len(order.legs) == 2
+    assert order.strategy_id == "diag_1"
+    assert order.legs[0].contract.expiry == "20260620"
+    assert order.legs[0].contract.strike == 155.0
+    assert order.legs[0].contract.right == "C"
+    assert order.legs[0].quantity == -1
+    assert order.legs[1].contract.expiry == "20260718"
+    assert order.legs[1].contract.strike == 150.0
+    assert order.legs[1].contract.right == "C"
+    assert order.legs[1].quantity == 1
+
+
+def test_diagonal_spread_same_expiry():
+    with pytest.raises(ValueError, match="near_expiry must differ from far_expiry"):
+        diagonal_spread(
+            underlying="AAPL",
+            near_expiry="20260620",
+            near_strike=155.0,
+            far_expiry="20260620",
+            far_strike=150.0,
+            right="C",
+        )
