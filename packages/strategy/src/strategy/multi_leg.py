@@ -279,3 +279,215 @@ def bear_call_spread(
         ),
     ]
     return Order(legs=legs, strategy_id=strategy_id)
+
+
+def strangle(
+    underlying: str,
+    expiry: str,
+    put_strike: float,
+    call_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if put_strike >= call_strike:
+        raise ValueError(
+            f"put_strike must be less than call_strike, got {put_strike} >= {call_strike}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=put_strike,
+                right="P",
+            ),
+            quantity=quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=call_strike,
+                right="C",
+            ),
+            quantity=quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def call_butterfly(
+    underlying: str,
+    expiry: str,
+    lower_strike: float,
+    middle_strike: float,
+    upper_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if not (lower_strike < middle_strike < upper_strike):
+        raise ValueError(
+            f"Strikes must satisfy lower < middle < upper, "
+            f"got {lower_strike}, {middle_strike}, {upper_strike}"
+        )
+    if abs((middle_strike - lower_strike) - (upper_strike - middle_strike)) > 1e-9:
+        raise ValueError(
+            f"wings must be equidistant from middle, "
+            f"got {middle_strike - lower_strike} vs {upper_strike - middle_strike}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=lower_strike,
+                right="C",
+            ),
+            quantity=quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=middle_strike,
+                right="C",
+            ),
+            quantity=-2 * quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=upper_strike,
+                right="C",
+            ),
+            quantity=quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def put_butterfly(
+    underlying: str,
+    expiry: str,
+    lower_strike: float,
+    middle_strike: float,
+    upper_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if not (lower_strike < middle_strike < upper_strike):
+        raise ValueError(
+            f"Strikes must satisfy lower < middle < upper, "
+            f"got {lower_strike}, {middle_strike}, {upper_strike}"
+        )
+    if abs((middle_strike - lower_strike) - (upper_strike - middle_strike)) > 1e-9:
+        raise ValueError(
+            f"wings must be equidistant from middle, "
+            f"got {middle_strike - lower_strike} vs {upper_strike - middle_strike}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=lower_strike,
+                right="P",
+            ),
+            quantity=quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=middle_strike,
+                right="P",
+            ),
+            quantity=-2 * quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=upper_strike,
+                right="P",
+            ),
+            quantity=quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def iron_butterfly(
+    underlying: str,
+    expiry: str,
+    put_buy_strike: float,
+    middle_strike: float,
+    call_buy_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if not (put_buy_strike < middle_strike < call_buy_strike):
+        raise ValueError(
+            f"Strikes must satisfy put_buy < middle < call_buy, "
+            f"got {put_buy_strike}, {middle_strike}, {call_buy_strike}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=put_buy_strike,
+                right="P",
+            ),
+            quantity=quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=middle_strike,
+                right="P",
+            ),
+            quantity=-quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=middle_strike,
+                right="C",
+            ),
+            quantity=-quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=call_buy_strike,
+                right="C",
+            ),
+            quantity=quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)

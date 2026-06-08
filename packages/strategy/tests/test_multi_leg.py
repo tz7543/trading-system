@@ -5,9 +5,13 @@ from strategy.multi_leg import (
     bear_put_spread,
     bull_call_spread,
     bull_put_spread,
+    call_butterfly,
     covered_call,
+    iron_butterfly,
     iron_condor,
+    put_butterfly,
     straddle,
+    strangle,
 )
 
 
@@ -180,4 +184,149 @@ def test_bear_call_spread_invalid_strikes():
             expiry="20260620",
             sell_strike=160.0,
             buy_strike=155.0,
+        )
+
+
+def test_strangle():
+    order = strangle(
+        underlying="AAPL",
+        expiry="20260620",
+        put_strike=145.0,
+        call_strike=155.0,
+        quantity=2,
+        strategy_id="strng_1",
+    )
+    assert len(order.legs) == 2
+    assert order.strategy_id == "strng_1"
+    assert order.legs[0].contract.strike == 145.0
+    assert order.legs[0].contract.right == "P"
+    assert order.legs[0].quantity == 2
+    assert order.legs[1].contract.strike == 155.0
+    assert order.legs[1].contract.right == "C"
+    assert order.legs[1].quantity == 2
+
+
+def test_strangle_invalid_strikes():
+    with pytest.raises(ValueError, match="put_strike must be less than call_strike"):
+        strangle(
+            underlying="AAPL",
+            expiry="20260620",
+            put_strike=155.0,
+            call_strike=145.0,
+        )
+
+
+def test_call_butterfly():
+    order = call_butterfly(
+        underlying="AAPL",
+        expiry="20260620",
+        lower_strike=145.0,
+        middle_strike=150.0,
+        upper_strike=155.0,
+        quantity=1,
+        strategy_id="cfly_1",
+    )
+    assert len(order.legs) == 3
+    assert order.strategy_id == "cfly_1"
+    assert order.legs[0].contract.strike == 145.0
+    assert order.legs[0].contract.right == "C"
+    assert order.legs[0].quantity == 1
+    assert order.legs[1].contract.strike == 150.0
+    assert order.legs[1].contract.right == "C"
+    assert order.legs[1].quantity == -2
+    assert order.legs[2].contract.strike == 155.0
+    assert order.legs[2].contract.right == "C"
+    assert order.legs[2].quantity == 1
+
+
+def test_call_butterfly_non_equidistant():
+    with pytest.raises(ValueError, match="wings must be equidistant"):
+        call_butterfly(
+            underlying="AAPL",
+            expiry="20260620",
+            lower_strike=145.0,
+            middle_strike=150.0,
+            upper_strike=160.0,
+        )
+
+
+def test_call_butterfly_invalid_order():
+    with pytest.raises(ValueError, match="lower < middle < upper"):
+        call_butterfly(
+            underlying="AAPL",
+            expiry="20260620",
+            lower_strike=155.0,
+            middle_strike=150.0,
+            upper_strike=145.0,
+        )
+
+
+def test_put_butterfly():
+    order = put_butterfly(
+        underlying="AAPL",
+        expiry="20260620",
+        lower_strike=145.0,
+        middle_strike=150.0,
+        upper_strike=155.0,
+        quantity=1,
+        strategy_id="pfly_1",
+    )
+    assert len(order.legs) == 3
+    assert order.strategy_id == "pfly_1"
+    assert order.legs[0].contract.strike == 145.0
+    assert order.legs[0].contract.right == "P"
+    assert order.legs[0].quantity == 1
+    assert order.legs[1].contract.strike == 150.0
+    assert order.legs[1].contract.right == "P"
+    assert order.legs[1].quantity == -2
+    assert order.legs[2].contract.strike == 155.0
+    assert order.legs[2].contract.right == "P"
+    assert order.legs[2].quantity == 1
+
+
+def test_put_butterfly_non_equidistant():
+    with pytest.raises(ValueError, match="wings must be equidistant"):
+        put_butterfly(
+            underlying="AAPL",
+            expiry="20260620",
+            lower_strike=140.0,
+            middle_strike=150.0,
+            upper_strike=155.0,
+        )
+
+
+def test_iron_butterfly():
+    order = iron_butterfly(
+        underlying="AAPL",
+        expiry="20260620",
+        put_buy_strike=140.0,
+        middle_strike=150.0,
+        call_buy_strike=160.0,
+        quantity=1,
+        strategy_id="ifly_1",
+    )
+    assert len(order.legs) == 4
+    assert order.strategy_id == "ifly_1"
+    assert order.legs[0].contract.strike == 140.0
+    assert order.legs[0].contract.right == "P"
+    assert order.legs[0].quantity == 1
+    assert order.legs[1].contract.strike == 150.0
+    assert order.legs[1].contract.right == "P"
+    assert order.legs[1].quantity == -1
+    assert order.legs[2].contract.strike == 150.0
+    assert order.legs[2].contract.right == "C"
+    assert order.legs[2].quantity == -1
+    assert order.legs[3].contract.strike == 160.0
+    assert order.legs[3].contract.right == "C"
+    assert order.legs[3].quantity == 1
+
+
+def test_iron_butterfly_invalid_strikes():
+    with pytest.raises(ValueError, match="put_buy < middle < call_buy"):
+        iron_butterfly(
+            underlying="AAPL",
+            expiry="20260620",
+            put_buy_strike=160.0,
+            middle_strike=150.0,
+            call_buy_strike=140.0,
         )
