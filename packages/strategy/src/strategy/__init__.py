@@ -1,12 +1,41 @@
 from strategy.base import BaseStrategy
 from strategy.greeks_calc import GreeksCalculator
-from strategy.multi_leg import bull_call_spread, covered_call, iron_condor, straddle
+from strategy.multi_leg import (
+    bear_call_spread,
+    bear_put_spread,
+    bull_call_spread,
+    bull_put_spread,
+    calendar_spread,
+    call_butterfly,
+    cash_secured_put,
+    collar,
+    covered_call,
+    diagonal_spread,
+    iron_butterfly,
+    iron_condor,
+    protective_put,
+    put_butterfly,
+    straddle,
+    strangle,
+)
 
 __all__ = [
     "BaseStrategy",
     "GreeksCalculator",
+    "bear_call_spread",
+    "bear_put_spread",
     "bull_call_spread",
+    "bull_put_spread",
+    "calendar_spread",
+    "call_butterfly",
+    "cash_secured_put",
+    "collar",
     "covered_call",
+    "diagonal_spread",
+    "iron_butterfly",
     "iron_condor",
+    "protective_put",
+    "put_butterfly",
     "straddle",
+    "strangle",
 ]
