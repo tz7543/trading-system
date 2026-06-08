@@ -3,10 +3,9 @@ from datetime import UTC, datetime
 import pytest
 
 from core.events import AssignmentEvent
-from core.models import Contract, Leg, Position
+from core.models import Contract, Leg, Position, assignment_stock_quantity
 from strategy.assignment import (
     apply_assignment,
-    assignment_stock_quantity,
     build_roll_order,
     is_partial_assignment,
 )

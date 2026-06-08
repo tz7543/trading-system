@@ -19,6 +19,7 @@ from core.models import (
     Position,
     RiskLimits,
     ValidationResult,
+    assignment_stock_quantity,
 )
 from core.partitions import tick_contract_dir, tick_partition_path
 
@@ -43,6 +44,7 @@ __all__ = [
     "SignalEvent",
     "SimClock",
     "ValidationResult",
+    "assignment_stock_quantity",
     "tick_contract_dir",
     "tick_partition_path",
 ]

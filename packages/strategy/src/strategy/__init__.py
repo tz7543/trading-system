@@ -1,6 +1,6 @@
+from core.models import assignment_stock_quantity
 from strategy.assignment import (
     apply_assignment,
-    assignment_stock_quantity,
     build_roll_order,
     is_partial_assignment,
     matching_short_option_leg,

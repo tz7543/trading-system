@@ -2,22 +2,6 @@ from core.events import AssignmentEvent
 from core.models import Contract, Leg, Order, Position
 
 
-def assignment_stock_quantity(
-    assigned_contract: Contract,
-    contracts_assigned: int,
-) -> int:
-    if assigned_contract.sec_type != "OPT":
-        raise ValueError("assigned_contract must be an option")
-    if contracts_assigned < 1:
-        raise ValueError("contracts_assigned must be >= 1")
-    shares = contracts_assigned * assigned_contract.multiplier
-    if assigned_contract.right == "P":
-        return shares
-    if assigned_contract.right == "C":
-        return -shares
-    raise ValueError("assigned_contract right must be C or P")
-
-
 def is_partial_assignment(
     position: Position,
     assignment: AssignmentEvent,
