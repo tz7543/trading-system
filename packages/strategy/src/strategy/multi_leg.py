@@ -491,3 +491,98 @@ def iron_butterfly(
         ),
     ]
     return Order(legs=legs, strategy_id=strategy_id)
+
+
+def collar(
+    underlying: str,
+    expiry: str,
+    put_strike: float,
+    call_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    if put_strike >= call_strike:
+        raise ValueError(
+            f"put_strike must be less than call_strike, got {put_strike} >= {call_strike}"
+        )
+    legs = [
+        Leg(
+            contract=Contract(symbol=underlying, sec_type="STK"),
+            quantity=100 * quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=put_strike,
+                right="P",
+            ),
+            quantity=quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=call_strike,
+                right="C",
+            ),
+            quantity=-quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def protective_put(
+    underlying: str,
+    expiry: str,
+    put_strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    legs = [
+        Leg(
+            contract=Contract(symbol=underlying, sec_type="STK"),
+            quantity=100 * quantity,
+        ),
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=put_strike,
+                right="P",
+            ),
+            quantity=quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)
+
+
+def cash_secured_put(
+    underlying: str,
+    expiry: str,
+    strike: float,
+    quantity: int = 1,
+    strategy_id: str = "",
+) -> Order:
+    if quantity < 1:
+        raise ValueError("quantity must be >= 1")
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol=underlying,
+                sec_type="OPT",
+                expiry=expiry,
+                strike=strike,
+                right="P",
+            ),
+            quantity=-quantity,
+        ),
+    ]
+    return Order(legs=legs, strategy_id=strategy_id)

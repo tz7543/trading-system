@@ -6,9 +6,12 @@ from strategy.multi_leg import (
     bull_call_spread,
     bull_put_spread,
     call_butterfly,
+    cash_secured_put,
+    collar,
     covered_call,
     iron_butterfly,
     iron_condor,
+    protective_put,
     put_butterfly,
     straddle,
     strangle,
@@ -330,3 +333,66 @@ def test_iron_butterfly_invalid_strikes():
             middle_strike=150.0,
             call_buy_strike=140.0,
         )
+
+
+def test_collar():
+    order = collar(
+        underlying="AAPL",
+        expiry="20260620",
+        put_strike=145.0,
+        call_strike=155.0,
+        quantity=1,
+        strategy_id="collar_1",
+    )
+    assert len(order.legs) == 3
+    assert order.strategy_id == "collar_1"
+    assert order.legs[0].contract.sec_type == "STK"
+    assert order.legs[0].quantity == 100
+    assert order.legs[1].contract.strike == 145.0
+    assert order.legs[1].contract.right == "P"
+    assert order.legs[1].quantity == 1
+    assert order.legs[2].contract.strike == 155.0
+    assert order.legs[2].contract.right == "C"
+    assert order.legs[2].quantity == -1
+
+
+def test_collar_invalid_strikes():
+    with pytest.raises(ValueError, match="put_strike must be less than call_strike"):
+        collar(
+            underlying="AAPL",
+            expiry="20260620",
+            put_strike=160.0,
+            call_strike=150.0,
+        )
+
+
+def test_protective_put():
+    order = protective_put(
+        underlying="AAPL",
+        expiry="20260620",
+        put_strike=145.0,
+        quantity=2,
+        strategy_id="pp_1",
+    )
+    assert len(order.legs) == 2
+    assert order.strategy_id == "pp_1"
+    assert order.legs[0].contract.sec_type == "STK"
+    assert order.legs[0].quantity == 200
+    assert order.legs[1].contract.strike == 145.0
+    assert order.legs[1].contract.right == "P"
+    assert order.legs[1].quantity == 2
+
+
+def test_cash_secured_put():
+    order = cash_secured_put(
+        underlying="AAPL",
+        expiry="20260620",
+        strike=145.0,
+        quantity=3,
+        strategy_id="csp_1",
+    )
+    assert len(order.legs) == 1
+    assert order.strategy_id == "csp_1"
+    assert order.legs[0].contract.strike == 145.0
+    assert order.legs[0].contract.right == "P"
+    assert order.legs[0].quantity == -3
