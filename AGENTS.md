@@ -21,9 +21,13 @@ This is a Python 3.11+ `uv` workspace for a US equities/options trading system
 using Interactive Brokers TWS / IB Gateway. The approved design spec is
 @docs/superpowers/specs/2026-06-04-tws-monorepo-design.md.
 
-The repository is still being assembled. Do not document a local trading run
-command until `apps/trader/main.py` or an equivalent entry point is committed
-and verified.
+The CLI entry point is committed but paper TWS smoke test is still pending.
+
+```bash
+uv run python apps/trader/main.py validate-config [--config apps/trader/config.toml]
+uv run python apps/trader/main.py backtest [--config apps/trader/config.toml]
+uv run python apps/trader/main.py live [--config apps/trader/config.toml]
+```
 
 ## Project Structure & Module Organization
 
@@ -124,3 +128,18 @@ concern.
 PRs should include a short problem statement, the implemented change, test
 evidence, linked issue or plan when relevant, and screenshots only for
 UI-facing changes.
+
+## Auto-Format Hooks
+
+`.py` files are auto-formatted on every Write/Edit via tool hooks
+(`.claude/settings.json` and `.codex/hooks.json` both run
+`uvx ruff format` + `uvx ruff check --fix`). Do not manually format or fix
+lint errors that Ruff handles — the hook does it automatically.
+
+## Caveats
+
+- `README.md` is stale — it describes the old flat layout and pip workflow.
+  Do not reference it for project structure or setup instructions.
+- No CI/CD pipeline — all verification is local (`uv run pytest`,
+  `uv run ruff check .`).
+- Refer to `docs/HANDOFF.md` for current project status and next steps.
