@@ -27,7 +27,7 @@ class SimulatedExecutor:
             total_commission = 0.0
             for leg in order_event.order.legs:
                 market = market_snapshot[leg.contract.symbol]
-                price = _fill_price(leg, market)
+                price = _fill_price(leg, market, len(order_event.order.legs))
                 legs_filled.append(
                     Leg(
                         contract=leg.contract,
@@ -71,8 +71,24 @@ def _mid_price(leg: Leg, market: MarketEvent) -> float:
     return market.last
 
 
-def _fill_price(leg: Leg, market: MarketEvent) -> float:
-    return _mid_price(leg, market)
+def _fill_quality(num_legs: int) -> float:
+    if num_legs <= 1:
+        return 0.75
+    if num_legs == 2:
+        return 0.66
+    if num_legs == 3:
+        return 0.56
+    return 0.53
+
+
+def _fill_price(leg: Leg, market: MarketEvent, num_legs: int = 1) -> float:
+    if leg.contract.sec_type == "STK":
+        return market.last
+    quality = _fill_quality(num_legs)
+    spread = market.ask - market.bid
+    if leg.quantity > 0:
+        return market.bid + spread * quality
+    return market.ask - spread * quality
 
 
 def _commission(leg: Leg) -> float:

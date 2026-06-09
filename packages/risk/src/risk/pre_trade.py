@@ -1,5 +1,5 @@
 from core.events import SignalEvent
-from core.models import Greeks, Position, RiskLimits, ValidationResult
+from core.models import Greeks, MarginInfo, Position, RiskLimits, ValidationResult
 
 
 class PreTradeValidator:
@@ -12,6 +12,7 @@ class PreTradeValidator:
         portfolio_greeks: Greeks,
         proposed_greeks: Greeks,
         positions: list[Position],
+        margin_info: MarginInfo | None = None,
     ) -> ValidationResult:
         new_count = len(positions) + 1
         if new_count > self._limits.max_position_size:
@@ -33,5 +34,13 @@ class PreTradeValidator:
                 approved=False,
                 reason=f"Vega limit exceeded: {new_vega:.2f} > +/-{self._limits.max_vega}",
             )
+
+        if margin_info is not None and margin_info.equity_with_loan > 0:
+            utilization = margin_info.init_margin / margin_info.equity_with_loan
+            if utilization > self._limits.max_margin_utilization:
+                return ValidationResult(
+                    approved=False,
+                    reason=f"Margin utilization exceeded: {utilization:.1%} > {self._limits.max_margin_utilization:.1%}",
+                )
 
         return ValidationResult(approved=True)

@@ -23,6 +23,25 @@ class Greeks:
     implied_vol: float = 0.0
     underlying_price: float = 0.0
 
+    def __add__(self, other: "Greeks") -> "Greeks":
+        return Greeks(
+            delta=self.delta + other.delta,
+            gamma=self.gamma + other.gamma,
+            vega=self.vega + other.vega,
+            theta=self.theta + other.theta,
+        )
+
+    def __mul__(self, scalar: float) -> "Greeks":
+        return Greeks(
+            delta=self.delta * scalar,
+            gamma=self.gamma * scalar,
+            vega=self.vega * scalar,
+            theta=self.theta * scalar,
+        )
+
+    def __rmul__(self, scalar: float) -> "Greeks":
+        return self.__mul__(scalar)
+
 
 @dataclass
 class Contract:
@@ -69,6 +88,13 @@ class ValidationResult:
 
 
 @dataclass
+class MarginInfo:
+    init_margin: float
+    maint_margin: float
+    equity_with_loan: float
+
+
+@dataclass
 class Position:
     legs: list[Leg]
     strategy_id: str
@@ -83,6 +109,7 @@ class Order:
     order_type: Literal["MKT", "LMT", "STP"] = "LMT"
     limit_price: float | None = None
     time_in_force: Literal["DAY", "GTC"] = "DAY"
+    is_credit: bool | None = None
 
 
 def assignment_stock_quantity(

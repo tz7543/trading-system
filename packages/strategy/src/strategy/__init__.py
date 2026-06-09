@@ -7,6 +7,7 @@ from strategy.assignment import (
 )
 from strategy.base import BaseStrategy
 from strategy.delta_hedge import DeltaHedgeStrategy
+from strategy.dte_filter import days_to_expiry, in_dte_window
 from strategy.greeks_calc import GreeksCalculator
 from strategy.iv_entry import IVRankEntryStrategy
 from strategy.iv_metrics import (
@@ -16,6 +17,7 @@ from strategy.iv_metrics import (
     calculate_iv_rank,
     valid_iv_values,
 )
+from strategy.managed_exit import ManagedExit
 from strategy.multi_leg import (
     bear_call_spread,
     bear_put_spread,
@@ -47,6 +49,7 @@ __all__ = [
     "GreeksCalculator",
     "IVMetrics",
     "IVRankEntryStrategy",
+    "ManagedExit",
     "apply_assignment",
     "assignment_stock_quantity",
     "bear_call_spread",
@@ -62,8 +65,10 @@ __all__ = [
     "cash_secured_put",
     "collar",
     "covered_call",
+    "days_to_expiry",
     "diagonal_spread",
     "filter_strikes",
+    "in_dte_window",
     "iron_butterfly",
     "iron_condor",
     "is_partial_assignment",

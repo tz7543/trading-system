@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "trading-core",
-    "ib-async>=1.0",
+    "ib-async>=2.0.1",
 ]
 
 [build-system]

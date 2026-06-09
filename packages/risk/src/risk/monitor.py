@@ -17,6 +17,8 @@ class RealTimeMonitor:
         self,
         portfolio_greeks: Greeks,
         equity: float,
+        min_dte: int | None = None,
+        margin_cushion: float | None = None,
     ) -> list[AlertEvent]:
         self.update_equity(equity)
         alerts: list[AlertEvent] = []
@@ -51,12 +53,66 @@ class RealTimeMonitor:
                 )
             )
 
+        if min_dte is not None:
+            if min_dte <= 3:
+                alerts.append(
+                    AlertEvent(
+                        message=f"CRITICAL gamma risk: {min_dte} DTE remaining, close short options near ATM",
+                        value=float(min_dte),
+                        timestamp=now,
+                    )
+                )
+            elif min_dte <= 7:
+                alerts.append(
+                    AlertEvent(
+                        message=f"WARNING: elevated gamma risk at {min_dte} DTE",
+                        value=float(min_dte),
+                        timestamp=now,
+                    )
+                )
+            elif min_dte <= 14:
+                alerts.append(
+                    AlertEvent(
+                        message=f"Approaching gamma risk zone: {min_dte} DTE",
+                        value=float(min_dte),
+                        timestamp=now,
+                    )
+                )
+
+        if margin_cushion is not None:
+            if margin_cushion < 0.02:
+                alerts.append(
+                    AlertEvent(
+                        message=f"RED: margin emergency, cushion {margin_cushion:.1%}",
+                        value=margin_cushion,
+                        timestamp=now,
+                    )
+                )
+            elif margin_cushion < 0.05:
+                alerts.append(
+                    AlertEvent(
+                        message=f"ORANGE: margin critical, cushion {margin_cushion:.1%}",
+                        value=margin_cushion,
+                        timestamp=now,
+                    )
+                )
+            elif margin_cushion < 0.10:
+                alerts.append(
+                    AlertEvent(
+                        message=f"YELLOW: margin warning, cushion {margin_cushion:.1%}",
+                        value=margin_cushion,
+                        timestamp=now,
+                    )
+                )
+
         return alerts
 
     def should_circuit_break(
         self,
         portfolio_greeks: Greeks,
         equity: float,
+        min_dte: int | None = None,
+        margin_cushion: float | None = None,
     ) -> bool:
         self.update_equity(equity)
         if self._peak_equity > 0:
@@ -65,4 +121,8 @@ class RealTimeMonitor:
                 return True
         if abs(portfolio_greeks.delta) > self._limits.max_delta:
             return True
-        return abs(portfolio_greeks.vega) > self._limits.max_vega
+        if abs(portfolio_greeks.vega) > self._limits.max_vega:
+            return True
+        if min_dte is not None and min_dte <= 0:
+            return True
+        return margin_cushion is not None and margin_cushion < 0.02

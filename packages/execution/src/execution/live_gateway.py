@@ -107,6 +107,15 @@ def _build_single_leg(order) -> tuple[ibi.Contract, ibi.Order]:
     return ib_contract, ib_order
 
 
+def _combo_limit_price(order) -> float:
+    price = order.limit_price or 0.0
+    if order.is_credit is True and price > 0:
+        return -price
+    if order.is_credit is False and price < 0:
+        return abs(price)
+    return price
+
+
 def _build_bag(order) -> tuple[ibi.Contract, ibi.Order]:
     underlying = order.legs[0].contract.symbol
     bag = ibi.Contract(
@@ -133,9 +142,10 @@ def _build_bag(order) -> tuple[ibi.Contract, ibi.Order]:
     if order.order_type == "MKT":
         ib_order = ibi.MarketOrder("BUY", 1)
     else:
-        ib_order = ibi.LimitOrder("BUY", 1, order.limit_price or 0.0)
+        ib_order = ibi.LimitOrder("BUY", 1, _combo_limit_price(order))
 
     ib_order.tif = order.time_in_force
+    ib_order.smartComboRoutingParams = [ibi.TagValue("NonGuaranteed", "1")]
     return bag, ib_order
 
 

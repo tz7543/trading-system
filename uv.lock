@@ -594,7 +594,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ib-async", specifier = ">=1.0" },
+    { name = "ib-async", specifier = ">=2.0.1" },
     { name = "trading-core", editable = "packages/core" },
 ]
 

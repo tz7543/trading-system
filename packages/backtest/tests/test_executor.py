@@ -63,7 +63,7 @@ async def test_fill_stk_at_last_price():
 
 
 @pytest.mark.asyncio
-async def test_fill_opt_at_midpoint():
+async def test_fill_opt_with_orats_slippage():
     bus = EventBus()
     clock = SimClock(datetime(2026, 6, 4, 14, 31, 0, tzinfo=UTC))
     executor = SimulatedExecutor(bus, clock)
@@ -83,7 +83,8 @@ async def test_fill_opt_at_midpoint():
     snapshot = {"AAPL260620C00150000": _opt_market(bid=5.00, ask=5.40)}
     fills = await executor.fill_pending(snapshot)
     assert len(fills) == 1
-    assert fills[0].legs_filled[0].entry_price == pytest.approx(5.20)
+    # 1-leg sell: ask - spread * fill_quality = 5.40 - 0.40 * 0.75 = 5.10
+    assert fills[0].legs_filled[0].entry_price == pytest.approx(5.10)
     # Commission: max($0.65/contract * 1, $1.00) = $1.00
     assert fills[0].commission == pytest.approx(1.00)
 
@@ -128,3 +129,43 @@ async def test_all_or_nothing_multi_leg():
     assert len(fills[0].legs_filled) == 2
     # STK $0.50 + OPT $0.65 = $1.15 > $1.00 floor
     assert fills[0].commission == pytest.approx(1.15)
+
+
+def test_fill_quality_by_leg_count():
+    from backtest.executor import _fill_quality
+
+    assert _fill_quality(1) == 0.75
+    assert _fill_quality(2) == 0.66
+    assert _fill_quality(3) == 0.56
+    assert _fill_quality(4) == 0.53
+    assert _fill_quality(6) == 0.53
+
+
+def test_fill_price_orats_single_leg():
+    from backtest.executor import _fill_price
+
+    market = _opt_market(bid=1.00, ask=2.00)
+    buy_leg = Leg(
+        contract=Contract(
+            symbol="AAPL260620C00150000",
+            sec_type="OPT",
+            expiry="20260620",
+            strike=150.0,
+            right="C",
+        ),
+        quantity=1,
+    )
+    sell_leg = Leg(
+        contract=Contract(
+            symbol="AAPL260620C00150000",
+            sec_type="OPT",
+            expiry="20260620",
+            strike=150.0,
+            right="C",
+        ),
+        quantity=-1,
+    )
+    # 1-leg buy: bid + spread * 0.75 = 1.00 + 1.00 * 0.75 = 1.75
+    assert _fill_price(buy_leg, market, num_legs=1) == pytest.approx(1.75)
+    # 1-leg sell: ask - spread * 0.75 = 2.00 - 1.00 * 0.75 = 1.25
+    assert _fill_price(sell_leg, market, num_legs=1) == pytest.approx(1.25)

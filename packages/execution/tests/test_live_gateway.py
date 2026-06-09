@@ -197,3 +197,182 @@ async def test_on_assignment_publishes_assignment_event():
     assert received[0].stock_quantity == 100
     assert received[0].account == "DU123"
     assert received[0].underlying_price == 144.50
+
+
+def _bag_legs():
+    return [
+        Leg(
+            contract=Contract(
+                symbol="AAPL",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=150.0,
+                right="C",
+                con_id=100001,
+            ),
+            quantity=-1,
+        ),
+        Leg(
+            contract=Contract(
+                symbol="AAPL",
+                sec_type="OPT",
+                expiry="20260620",
+                strike=155.0,
+                right="C",
+                con_id=100002,
+            ),
+            quantity=1,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bag_credit_spread_sign_correction():
+    mock_ib = _make_mock_ib()
+    mock_trade = MagicMock()
+    mock_trade.orderStatus.orderId = 3
+    mock_ib.placeOrder.return_value = mock_trade
+
+    order = Order(
+        legs=_bag_legs(),
+        strategy_id="test",
+        order_type="LMT",
+        limit_price=2.00,
+        is_credit=True,
+    )
+    event = OrderEvent(
+        order=order,
+        timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC),
+        approved_by="risk",
+    )
+
+    bus = EventBus()
+    clock = LiveClock()
+    gateway = LiveGateway(bus, clock, mock_ib)
+    await gateway.on_order(event)
+
+    args = mock_ib.placeOrder.call_args
+    ib_order = args[0][1]
+    assert ib_order.lmtPrice == -2.00
+
+
+@pytest.mark.asyncio
+async def test_bag_debit_spread_sign_correction():
+    mock_ib = _make_mock_ib()
+    mock_trade = MagicMock()
+    mock_trade.orderStatus.orderId = 4
+    mock_ib.placeOrder.return_value = mock_trade
+
+    order = Order(
+        legs=_bag_legs(),
+        strategy_id="test",
+        order_type="LMT",
+        limit_price=-1.50,
+        is_credit=False,
+    )
+    event = OrderEvent(
+        order=order,
+        timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC),
+        approved_by="risk",
+    )
+
+    bus = EventBus()
+    clock = LiveClock()
+    gateway = LiveGateway(bus, clock, mock_ib)
+    await gateway.on_order(event)
+
+    args = mock_ib.placeOrder.call_args
+    ib_order = args[0][1]
+    assert ib_order.lmtPrice == 1.50
+
+
+@pytest.mark.asyncio
+async def test_bag_credit_already_negative_no_double_negate():
+    mock_ib = _make_mock_ib()
+    mock_trade = MagicMock()
+    mock_trade.orderStatus.orderId = 6
+    mock_ib.placeOrder.return_value = mock_trade
+
+    order = Order(
+        legs=_bag_legs(),
+        strategy_id="test",
+        order_type="LMT",
+        limit_price=-2.00,
+        is_credit=True,
+    )
+    event = OrderEvent(
+        order=order,
+        timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC),
+        approved_by="risk",
+    )
+
+    bus = EventBus()
+    clock = LiveClock()
+    gateway = LiveGateway(bus, clock, mock_ib)
+    await gateway.on_order(event)
+
+    args = mock_ib.placeOrder.call_args
+    ib_order = args[0][1]
+    assert ib_order.lmtPrice == -2.00
+
+
+@pytest.mark.asyncio
+async def test_bag_debit_positive_passthrough():
+    mock_ib = _make_mock_ib()
+    mock_trade = MagicMock()
+    mock_trade.orderStatus.orderId = 7
+    mock_ib.placeOrder.return_value = mock_trade
+
+    order = Order(
+        legs=_bag_legs(),
+        strategy_id="test",
+        order_type="LMT",
+        limit_price=1.50,
+        is_credit=False,
+    )
+    event = OrderEvent(
+        order=order,
+        timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC),
+        approved_by="risk",
+    )
+
+    bus = EventBus()
+    clock = LiveClock()
+    gateway = LiveGateway(bus, clock, mock_ib)
+    await gateway.on_order(event)
+
+    args = mock_ib.placeOrder.call_args
+    ib_order = args[0][1]
+    assert ib_order.lmtPrice == 1.50
+
+
+@pytest.mark.asyncio
+async def test_bag_non_guaranteed_params():
+    mock_ib = _make_mock_ib()
+    mock_trade = MagicMock()
+    mock_trade.orderStatus.orderId = 5
+    mock_ib.placeOrder.return_value = mock_trade
+
+    order = Order(
+        legs=_bag_legs(),
+        strategy_id="test",
+        order_type="LMT",
+        limit_price=-0.50,
+    )
+    event = OrderEvent(
+        order=order,
+        timestamp=datetime(2026, 6, 5, 14, 30, tzinfo=UTC),
+        approved_by="risk",
+    )
+
+    bus = EventBus()
+    clock = LiveClock()
+    gateway = LiveGateway(bus, clock, mock_ib)
+    await gateway.on_order(event)
+
+    args = mock_ib.placeOrder.call_args
+    ib_order = args[0][1]
+    assert any(
+        tv.tag == "NonGuaranteed" and tv.value == "1"
+        for tv in ib_order.smartComboRoutingParams
+    )

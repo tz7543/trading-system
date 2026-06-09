@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from core.events import SignalEvent
-from core.models import Contract, Greeks, Leg, Order, Position, RiskLimits
+from core.models import Contract, Greeks, Leg, MarginInfo, Order, Position, RiskLimits
 from risk.pre_trade import PreTradeValidator
 
 
@@ -81,3 +81,48 @@ def test_rejected_vega_exceeded():
     )
     assert result.approved is False
     assert "Vega" in result.reason
+
+
+def test_approved_margin_within_limits():
+    validator = PreTradeValidator(_limits())
+    result = validator.validate(
+        signal=_signal(),
+        portfolio_greeks=Greeks(),
+        proposed_greeks=Greeks(),
+        positions=[],
+        margin_info=MarginInfo(
+            init_margin=50000.0,
+            maint_margin=40000.0,
+            equity_with_loan=100000.0,
+        ),
+    )
+    assert result.approved is True
+
+
+def test_rejected_margin_exceeded():
+    validator = PreTradeValidator(_limits())
+    result = validator.validate(
+        signal=_signal(),
+        portfolio_greeks=Greeks(),
+        proposed_greeks=Greeks(),
+        positions=[],
+        margin_info=MarginInfo(
+            init_margin=90000.0,
+            maint_margin=70000.0,
+            equity_with_loan=100000.0,
+        ),
+    )
+    assert result.approved is False
+    assert "Margin" in result.reason
+
+
+def test_approved_without_margin_info():
+    validator = PreTradeValidator(_limits())
+    result = validator.validate(
+        signal=_signal(),
+        portfolio_greeks=Greeks(),
+        proposed_greeks=Greeks(),
+        positions=[],
+        margin_info=None,
+    )
+    assert result.approved is True
