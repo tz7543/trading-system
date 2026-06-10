@@ -67,15 +67,19 @@ class OrderStatusEvent:
   - 映射只在 statusEvent 觸發時評估；**REJECTED/CANCELLED 判定僅適用於終態**
     （ib_async DoneStates：`Filled`/`Cancelled`/`ApiCancelled`/`Inactive`）。
   - `Filled` → FILLED
-  - `Cancelled` / `ApiCancelled` / `Inactive`（終態）：若 `trade.log` 含任何
-    **非零** `errorCode` 條目 → **REJECTED**（reason = 該條 message）；
-    否則 → **CANCELLED**。（`TradeLogEntry.errorCode` 預設為 0，非零才是錯誤；
-    訂單存活期間的警告 log 不觸發判定，因為只在終態評估。）
-  - `PendingSubmit` / `PreSubmitted` / `Submitted` → 一律 SUBMITTED（明確收斂）。
-  - **PARTIAL 不由 statusEvent 產生**（IB 部分成交期間狀態仍是 `Submitted`）——
-    由 fillEvent handler 在 `trade.orderStatus.remaining > 0` 時發布。
-  - 去重 memo 以 `(status, filled_quantity)` 為 key（單純 status 去重會吞掉
-    部分成交進度更新）。
+  - `Cancelled` / `ApiCancelled` / `Inactive`（終態）：檢查 `trade.log`
+    **最後一條**條目——`errorCode` 非零 → **REJECTED**（reason = 該條 message）；
+    否則 → **CANCELLED**。（用最後一條而非「任一條」：拒單時最後一條必為錯誤；
+    存活期警告後的人工取消會追加 errorCode=0 的取消條目，不會誤判為 REJECTED。
+    `TradeLogEntry.errorCode` 預設 0。）
+  - **非終態的派生規則**（`PendingSubmit`/`PreSubmitted`/`Submitted`）：
+    `filled == 0` → SUBMITTED；`filled > 0` → PARTIAL（statusEvent 不得在
+    部分成交後倒退發 SUBMITTED）。
+  - 去重 memo 以**派生後的** `(status, filled_quantity)` 為 key。
+- **BAG 成交歸屬（明確聲明）**：IB 對 combo 的 execution 按**個別 leg 合約**
+  回報，`fill.contract` 即該腿的期權合約——增量 FillEvent 直接以
+  `fill.contract` 建 Leg 即正確歸屬，無需映射回原始訂單。以雙腿 BAG 測試
+  驗證（§5 測試 3a）。
 - **部分成交**：訂閱 `trade.fillEvent` 發布**增量** FillEvent，取代現行
   `filledEvent`（只在完全成交時觸發、重放全部 fills 會重複計算）。
   **handler 簽名為 `(trade, fill)`**（ib_async 傳遞兩個參數），只發布**傳入的
@@ -119,6 +123,10 @@ class OrderStatusEvent:
     （converters / HistoricalDataHandler）附掛來源 contract。
   - `StorageSubscriber` 新增 `last_market_by_contract(key) -> MarketEvent | None`
     （以 contract_key 索引；既有 symbol 索引的 `last_market` 行為不變）。
+  - **tick 路由修正**（review 迭代 3 發現的既有 bug）：`_on_market` 的
+    Parquet 寫入路由改為優先用 `event.contract`（無則 fallback 既有
+    symbol→contract map）——否則同標的股票+期權訂閱會互相覆蓋
+    `register_contract`，tick 寫進錯誤分區。
 - `AppRiskState` 修正（live 與 backtest 共用）：
   - 建構子新增 `greeks_lookup: Callable[[str], MarketEvent | None] | None` 注入
     （接 `StorageSubscriber.last_market_by_contract`）。
@@ -216,6 +224,9 @@ class OrderStatusEvent:
 2. 取消：`Cancelled` 無 error log → OrderStatusEvent(CANCELLED)。
 3. 部分成交：兩筆 execution 經 `fillEvent` → 兩個增量 FillEvent，數量不重複；
    commission 僅在 report 已附掛的 fixture 中斷言。
+   3a. BAG 雙腿成交：兩腿各一筆 fill → 各自的 FillEvent 掛在**正確的 leg 合約**
+   （contract_key 不同）；部分成交後 statusEvent 再觸發 `Submitted` →
+   不發布倒退的 SUBMITTED（派生為 PARTIAL 且被 memo 去重）。
 4. ID 一致性：下單→成交後 `query_fills(order_id)` 非空（join 成立）；
    orders.broker_order_id 已回填。
 5. 既有 DB 遷移：以舊 schema 建 orders 表 → `init()` 後 broker_order_id 欄存在。
@@ -261,6 +272,13 @@ Inactive 以 error log 區分拒單（O-M6 + X-2）、commission 滯後政策（
 reconnect running-task guard（X-3）、config 欄位宣告（X-4）、SQLite ALTER 遷移
 （X-5）、AlertEvent value 慣例（X-6）、watchdog/週期檢查注入 Clock 與 check_now
 可測試設計（X-7）、package root re-export（X-8）、con_id=0 容忍聲明（O-M9）。
+
+**迭代 3（opus + codex，2026-06-10）**：opus 10/10 PASS、零阻斷、裁定通過。
+codex 報 4 項；查證後：BAG fill 歸屬「Critical」**否決**（IB 按 leg 合約回報
+execution，`fill.contract` 即正確歸屬；加 §5 測試 3a 作保險）；採納——終態
+REJECTED 判定改用 trade.log **最後一條**條目（防警告後取消誤判）、非終態派生
+規則 filled>0 → PARTIAL（防 SUBMITTED 倒退）、StorageSubscriber tick 路由改用
+event.contract（既有 symbol 塌縮 bug）。
 
 **迭代 2（opus + codex，2026-06-10）**：opus 10/10 PASS。採納——named-column
 INSERT（O 新發現）、per-contract 行情身分 contract_key + MarketEvent.contract +
