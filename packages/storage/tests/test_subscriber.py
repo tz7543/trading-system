@@ -220,7 +220,7 @@ async def test_tick_routing_uses_event_contract(tmp_path, subscriber_env):
 
 @pytest.mark.asyncio
 async def test_on_status_logged(subscriber_env):
-    bus, subscriber, store = subscriber_env
+    bus, _subscriber, store = subscriber_env
     status = OrderStatusEvent(
         order_id="o1",
         status="SUBMITTED",

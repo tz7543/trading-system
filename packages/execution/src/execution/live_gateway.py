@@ -140,6 +140,10 @@ class LiveGateway:
                 strategy_id=strategy_id,
             )
         )
+        # execDetails (fillEvent) and orderStatus (statusEvent) are independent TWS
+        # callbacks with no guaranteed ordering; a stale `remaining` here only affects
+        # the synthesised PARTIAL's counts — the authoritative status still arrives via
+        # statusEvent and the memo deduplicates it.
         remaining = int(trade.orderStatus.remaining)
         if remaining > 0:
             await self._on_status(trade, order_id, broker_id)
