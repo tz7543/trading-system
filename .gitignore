@@ -52,3 +52,6 @@ ibapi_config.ini
 
 # Graphify output (large generated files)
 graphify-out/
+
+# Codex review session artifacts
+.session/
