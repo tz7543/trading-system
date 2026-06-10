@@ -34,7 +34,7 @@ class TickReader:
                 str(partition_dir), format="parquet", schema=TICK_SCHEMA
             )
             table = dataset.to_table()
-            events.extend(_table_to_events(table))
+            events.extend(_table_to_events(table, contract))
         events.sort(key=lambda e: e.timestamp)
         return events
 
@@ -60,7 +60,7 @@ class TickReader:
         return dates
 
 
-def _table_to_events(table) -> list[MarketEvent]:
+def _table_to_events(table, contract: Contract) -> list[MarketEvent]:
     rows = table.to_pydict()
     events = []
     for i in range(len(rows["timestamp"])):
@@ -83,6 +83,7 @@ def _table_to_events(table) -> list[MarketEvent]:
                 last=rows["last"][i],
                 volume=rows["volume"][i],
                 model_greeks=greeks,
+                contract=contract,
             )
         )
     return events

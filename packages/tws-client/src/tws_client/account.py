@@ -15,7 +15,7 @@ class AccountState:
             self._store(item)
         self._ib.accountSummaryEvent += self._store
 
-    def _store(self, item) -> None:
+    def _store(self, item: ibi.AccountValue) -> None:
         try:
             self._values[item.tag] = float(item.value)
         except (TypeError, ValueError):
@@ -30,6 +30,8 @@ class AccountState:
             return cushion
         ewl = self._values.get("EquityWithLoanValue")
         maint = self._values.get("FullMaintMarginReq")
+        # Falsy ewl (0.0 = zero equity) intentionally returns None to avoid
+        # division by zero.
         if ewl and maint is not None:
             return (ewl - maint) / ewl
         return None
