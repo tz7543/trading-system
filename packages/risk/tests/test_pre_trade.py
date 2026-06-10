@@ -126,3 +126,37 @@ def test_approved_without_margin_info():
         margin_info=None,
     )
     assert result.approved is True
+
+
+def test_multi_leg_order_counts_each_leg():
+    limits = RiskLimits(
+        max_delta=1e9,
+        max_vega=1e9,
+        max_drawdown=0.5,
+        max_position_size=3,
+        max_margin_utilization=1.0,
+    )
+    validator = PreTradeValidator(limits)
+    # 4-leg iron condor, 0 existing positions: 4 > 3 → rejected
+    legs = [
+        Leg(
+            contract=Contract(
+                symbol="SPY",
+                sec_type="OPT",
+                expiry="20260119",
+                strike=float(strike),
+                right=right,
+            ),
+            quantity=qty,
+        )
+        for strike, right, qty in [
+            (140, "P", 1),
+            (145, "P", -1),
+            (155, "C", -1),
+            (160, "C", 1),
+        ]
+    ]
+    signal = _signal(legs=legs)
+    result = validator.validate(signal, Greeks(), Greeks(), positions=[])
+    assert not result.approved
+    assert "Position limit" in result.reason
