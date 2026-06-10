@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from trading_app.config import load_config
+from trading_app.config import RiskConfig, TraderConfig, TwsConfig, load_config
 
 
 def test_load_config_from_existing_toml():
@@ -78,3 +78,16 @@ max_margin_utilization = 0.8
 
     with pytest.raises(ValidationError):
         load_config(config_path)
+
+
+def test_new_timing_fields_defaults():
+    config = TraderConfig()
+    assert config.tws.stale_data_seconds == 60.0
+    assert config.risk.check_interval_seconds == 30.0
+
+
+def test_timing_fields_must_be_positive():
+    with pytest.raises(ValidationError):
+        TwsConfig(stale_data_seconds=0)
+    with pytest.raises(ValidationError):
+        RiskConfig(check_interval_seconds=-1)

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -184,6 +185,12 @@ async def test_live_app_wires_delta_hedge_adjust_signal_to_gateway(tmp_path):
     ib.disconnect = MagicMock()
     ib.isConnected = MagicMock(return_value=False)
     ib.disconnectedEvent = ev.Event("disconnectedEvent")
+    ib.accountSummaryEvent = ev.Event("accountSummaryEvent")
+
+    async def _account_summary(account=""):
+        return [MagicMock(tag="NetLiquidation", value="1000000")]
+
+    ib.accountSummaryAsync = _account_summary
     trade = MagicMock()
     trade.orderStatus.orderId = 8
     trade.filledEvent = ev.Event("filledEvent")
@@ -199,6 +206,8 @@ async def test_live_app_wires_delta_hedge_adjust_signal_to_gateway(tmp_path):
 
     app = await build_live_app(config, ib=ib, contracts=[contract])
     try:
+        # live risk truth comes from AccountState; seed it so the signal passes
+        await app.account_state.start()
         strategy = DeltaHedgeStrategy(
             strategy_id="delta-hedge",
             bus=app.bus,
@@ -656,3 +665,67 @@ async def test_alert_logger_subscriber(caplog):
             )
         )
     assert any("test-alert-msg" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Task 10: live reconnect loop
+# ---------------------------------------------------------------------------
+
+
+class CountingDataHandler:
+    """Each subscribe_quote ends the stream immediately (simulates a dead
+    stream after disconnect)."""
+
+    def __init__(self) -> None:
+        self.subscribe_count = 0
+
+    async def subscribe_quote(self, contract):
+        self.subscribe_count += 1
+        return
+        yield  # pragma: no cover — makes this an async generator
+
+
+@pytest.fixture
+async def live_app_env(tmp_path):
+    ib = MagicMock()
+    ib.disconnect = MagicMock()
+    ib.isConnected = MagicMock(return_value=False)
+    ib.disconnectedEvent = ev.Event("disconnectedEvent")
+    config = TraderConfig(
+        storage=StorageConfig(
+            ticks_dir=tmp_path / "ticks",
+            decision_db=tmp_path / "decisions.duckdb",
+            trade_db=tmp_path / "orders.db",
+        )
+    )
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    app = await build_live_app(config, ib=ib, contracts=[contract])
+    handler = CountingDataHandler()
+    app.data_handler = handler
+    yield app, handler
+    await app.close()
+
+
+@pytest.mark.asyncio
+async def test_run_market_data_resubscribes_after_reconnect(live_app_env):
+    app, handler = live_app_env
+    app._reconnected.set()  # sticky scenario: callback fired before wait
+    task = asyncio.create_task(app.run_market_data())
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if handler.subscribe_count >= 2:
+            break
+    app._shutdown = True
+    app._reconnected.set()
+    await asyncio.wait_for(task, timeout=1)
+    assert handler.subscribe_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_run_market_data_exits_on_shutdown(live_app_env):
+    app, _handler = live_app_env
+    task = asyncio.create_task(app.run_market_data())
+    await asyncio.sleep(0)
+    app._shutdown = True
+    app._reconnected.set()
+    await asyncio.wait_for(task, timeout=1)  # passes if it does not hang

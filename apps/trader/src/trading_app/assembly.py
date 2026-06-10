@@ -2,7 +2,7 @@ import asyncio
 import importlib
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,7 +32,8 @@ from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
 from storage import DecisionLogger, StorageSubscriber, TickWriter, TradeStore
 from strategy.base import BaseStrategy
 from trading_app.config import TraderConfig
-from tws_client import ConnectionManager, LiveDataHandler
+from trading_app.watchdog import MarketDataWatchdog
+from tws_client import AccountState, ConnectionManager, LiveDataHandler
 
 logger = logging.getLogger(__name__)
 
@@ -315,14 +316,48 @@ class LiveApp:
     decision_logger: DecisionLogger
     circuit_breaker: CircuitBreaker
     contracts: Sequence[Contract]
+    account_state: AccountState
+    watchdog: MarketDataWatchdog
+    _reconnected: asyncio.Event = field(default_factory=asyncio.Event)
+    _shutdown: bool = False
+
+    def __post_init__(self) -> None:
+        self.connection.on_reconnected.append(self._reconnected.set)
+        self.bus.subscribe(MarketEvent, self.watchdog.on_market)
 
     async def connect(self) -> None:
         await self.connection.connect()
+        await self.account_state.start()
 
     async def run_market_data(self) -> None:
-        await publish_market_data(self.bus, self.data_handler, self.contracts)
+        while not self._shutdown:
+            await publish_market_data(self.bus, self.data_handler, self.contracts)
+            if self._shutdown:
+                return
+            await self._reconnected.wait()
+            self._reconnected.clear()
+            await self.bus.publish(
+                AlertEvent(
+                    message="market data restarting after reconnect",
+                    value=0.0,
+                    timestamp=self.clock.now(),
+                )
+            )
+
+    async def risk_check_loop(self, interval: float) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            await self.risk_pipeline.check_now()
+
+    async def watchdog_loop(self, interval: float = 10.0) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            for alert in self.watchdog.check_now():
+                await self.bus.publish(alert)
 
     async def close(self) -> None:
+        self._shutdown = True
+        self._reconnected.set()  # wake run_market_data so it can exit
         self.connection.disconnect()
         try:
             await self.storage_subscriber.stop()
@@ -389,7 +424,15 @@ async def build_live_app(
         bus, config.storage, contracts
     )
     decision_logger = _build_decision_logger(config.storage.decision_db)
-    risk_state = AppRiskState(initial_equity=config.risk.initial_equity, clock=clock)
+    account_state = AccountState(ib)
+    risk_state = AppRiskState(
+        initial_equity=config.risk.initial_equity,
+        clock=clock,
+        greeks_lookup=storage_subscriber.last_market_by_contract,
+    )
+    watchdog = MarketDataWatchdog(
+        clock=clock, stale_seconds=config.tws.stale_data_seconds
+    )
     risk_pipeline = _wire_risk_pipeline(
         bus,
         clock,
@@ -397,6 +440,9 @@ async def build_live_app(
         decision_logger,
         storage_subscriber.last_market,
         risk_state,
+        equity_provider=account_state.equity,
+        margin_cushion_provider=account_state.margin_cushion,
+        min_dte_provider=risk_state.min_dte,
     )
     bus.subscribe(OrderEvent, gateway.on_order)
     return LiveApp(
@@ -412,6 +458,8 @@ async def build_live_app(
         decision_logger=decision_logger,
         circuit_breaker=risk_pipeline.circuit_breaker,
         contracts=list(contracts),
+        account_state=account_state,
+        watchdog=watchdog,
     )
 
 

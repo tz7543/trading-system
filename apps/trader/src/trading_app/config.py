@@ -15,6 +15,7 @@ class TwsConfig(BaseModel):
     port: int = Field(default=7497, ge=1, le=65535)
     client_id: int = Field(default=1, ge=0)
     max_subscriptions: int = Field(default=100, gt=0)
+    stale_data_seconds: float = Field(default=60.0, gt=0)
 
 
 class RiskConfig(BaseModel):
@@ -26,6 +27,7 @@ class RiskConfig(BaseModel):
     max_position_size: int = Field(default=10, gt=0)
     max_margin_utilization: float = Field(default=0.8, gt=0, le=1)
     initial_equity: float = Field(default=0.0, ge=0)
+    check_interval_seconds: float = Field(default=30.0, gt=0)
 
     def to_risk_limits(self) -> RiskLimits:
         return RiskLimits(
