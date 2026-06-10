@@ -77,3 +77,19 @@ def test_ticker_to_market_event_nan_values():
     assert event.ask == 0.0
     assert event.last == 0.0
     assert event.model_greeks is None
+
+
+def test_ticker_event_carries_contract():
+    contract = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260119", strike=150.0, right="C"
+    )
+    ticker = ibi.Ticker()
+    ticker.contract = ibi.Stock("AAPL", "SMART", "USD")
+    ticker.bid = 5.0
+    ticker.ask = 5.2
+    ticker.last = 5.1
+    ticker.volume = 100
+    ticker.time = datetime(2026, 1, 19, 14, 30, tzinfo=UTC)
+    ticker.modelGreeks = None
+    event = ticker_to_market_event(ticker, "AAPL", contract=contract)
+    assert event.contract is contract

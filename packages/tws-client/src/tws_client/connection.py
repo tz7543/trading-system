@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Callable
 
 import ib_async as ibi
 
@@ -21,6 +22,7 @@ class ConnectionManager:
         self._reconnect_delay = 30
         self._auto_reconnect = True
         self._reconnect_task: asyncio.Task | None = None
+        self.on_reconnected: list[Callable[[], None]] = []
         self._ib.disconnectedEvent += self._on_disconnect
 
     async def connect(self) -> None:
@@ -43,11 +45,12 @@ class ConnectionManager:
         return self._ib
 
     def _on_disconnect(self) -> None:
-        if self._auto_reconnect:
-            logger.warning(
-                "TWS disconnected, reconnecting in %ds", self._reconnect_delay
-            )
-            self._reconnect_task = asyncio.ensure_future(self._reconnect())
+        if not self._auto_reconnect:
+            return
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        logger.warning("TWS disconnected, reconnecting in %ds", self._reconnect_delay)
+        self._reconnect_task = asyncio.ensure_future(self._reconnect())
 
     async def _reconnect(self) -> None:
         delay = self._reconnect_delay
@@ -58,10 +61,16 @@ class ConnectionManager:
                 await self._ib.connectAsync(
                     self._host, self._port, self._client_id, timeout=4
                 )
-                logger.info("Reconnected to TWS")
-                return
             except Exception:
                 logger.exception(
                     "Reconnection failed, retrying in %ds", min(delay * 2, max_delay)
                 )
                 delay = min(delay * 2, max_delay)
+                continue
+            logger.info("Reconnected to TWS")
+            for callback in self.on_reconnected:
+                try:
+                    callback()
+                except Exception:
+                    logger.exception("on_reconnected callback failed")
+            return

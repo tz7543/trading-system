@@ -208,3 +208,18 @@ async def test_fetch_history_empty(tmp_path):
     contract = Contract(symbol="MSFT", sec_type="STK")
     bars = await handler.fetch_history(contract, "1 D", "1 day")
     assert bars == []
+
+
+@pytest.mark.asyncio
+async def test_subscribe_quote_events_carry_contract(tmp_path):
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    _write_test_data(
+        tmp_path,
+        contract,
+        "2026-06-04",
+        [_stk_row(datetime(2026, 6, 4, 14, 30, 0, tzinfo=UTC))],
+    )
+    handler = HistoricalDataHandler(tmp_path)
+    events = [e async for e in handler.subscribe_quote(contract)]
+    assert len(events) == 1
+    assert events[0].contract == contract

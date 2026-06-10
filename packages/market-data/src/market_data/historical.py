@@ -45,7 +45,7 @@ class HistoricalDataHandler(DataHandler):
             dataset = ds.dataset(
                 str(partition_dir), format="parquet", schema=TICK_SCHEMA
             )
-            events = _table_to_events(dataset.to_table())
+            events = _table_to_events(dataset.to_table(), contract)
             events.sort(key=lambda e: e.timestamp)
             for event in events:
                 yield event
@@ -79,7 +79,9 @@ class HistoricalDataHandler(DataHandler):
         return bars
 
 
-def _table_to_events(table: pa.Table) -> list[MarketEvent]:
+def _table_to_events(
+    table: pa.Table, contract: Contract | None = None
+) -> list[MarketEvent]:
     rows = table.to_pydict()
     events = []
     for i in range(len(rows["timestamp"])):
@@ -102,6 +104,7 @@ def _table_to_events(table: pa.Table) -> list[MarketEvent]:
                 last=rows["last"][i],
                 volume=rows["volume"][i],
                 model_greeks=greeks,
+                contract=contract,
             )
         )
     return events
