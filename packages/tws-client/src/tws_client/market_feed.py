@@ -38,7 +38,7 @@ class MarketDataFeed:
             queue: asyncio.Queue[MarketEvent] = asyncio.Queue()
 
             def on_update(t: ibi.Ticker) -> None:
-                event = ticker_to_market_event(t, contract.symbol)
+                event = ticker_to_market_event(t, contract.symbol, contract=contract)
                 queue.put_nowait(event)
 
             ticker.updateEvent += on_update

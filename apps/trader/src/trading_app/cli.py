@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import os
 import signal
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -46,6 +47,18 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ensure_paper_guard(config: TraderConfig) -> None:
+    paper_ports = {7497, 4002}
+    if config.tws.port in paper_ports:
+        return
+    if os.environ.get("IB_CONFIRM_LIVE") == "YES":
+        return
+    raise RuntimeError(
+        f"Port {config.tws.port} is not a paper trading port. "
+        "Set IB_CONFIRM_LIVE=YES to confirm live trading."
+    )
+
+
 async def _run_backtest(config: TraderConfig) -> int:
     strategy_config = _require_strategy(config)
     contracts = _require_contracts(config)
@@ -70,6 +83,7 @@ async def _run_backtest(config: TraderConfig) -> int:
 
 
 async def _run_live(config: TraderConfig) -> int:
+    _ensure_paper_guard(config)
     strategy_config = _require_strategy(config)
     contracts = _require_contracts(config)
     app = await build_live_app(config, contracts=contracts)
@@ -87,9 +101,21 @@ async def _run_live(config: TraderConfig) -> int:
         )
         subscribe_strategy(app.bus, strategy)
         await app.connect()
-        market_task = asyncio.create_task(app.run_market_data())
-        await shutdown.wait()
-        market_task.cancel()
+        tasks = [
+            asyncio.create_task(app.run_market_data()),
+            asyncio.create_task(
+                app.risk_check_loop(config.risk.check_interval_seconds)
+            ),
+            asyncio.create_task(app.watchdog_loop()),
+        ]
+        try:
+            await shutdown.wait()
+        finally:
+            for task in tasks:
+                task.cancel()
+            # await cancelled tasks before closing shared resources (bus/storage/
+            # connection), otherwise teardown-period tasks can still write
+            await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         await app.close()
     return 0

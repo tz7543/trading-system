@@ -43,3 +43,48 @@ async def test_auto_reconnect_on_disconnect():
         await mgr._reconnect_task
         mock_sleep.assert_awaited_once_with(30)
         assert ib.connectAsync.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_disconnect_does_not_stack_reconnect_tasks():
+    ib = _make_mock_ib()
+    mgr = ConnectionManager(ib, host="127.0.0.1", port=7497, client_id=1)
+    await mgr.connect()
+    ib.connectAsync.reset_mock()
+
+    with patch("tws_client.connection.asyncio.sleep", new_callable=AsyncMock):
+        mgr._on_disconnect()
+        first = mgr._reconnect_task
+        assert first is not None
+        mgr._on_disconnect()
+        assert mgr._reconnect_task is first
+        await first
+
+
+@pytest.mark.asyncio
+async def test_on_reconnected_callbacks_fired():
+    ib = _make_mock_ib()
+    mgr = ConnectionManager(ib, host="127.0.0.1", port=7497, client_id=1)
+    fired = []
+    mgr.on_reconnected.append(lambda: fired.append(1))
+
+    with patch("tws_client.connection.asyncio.sleep", new_callable=AsyncMock):
+        await mgr._reconnect()
+    assert fired == [1]
+
+
+@pytest.mark.asyncio
+async def test_on_reconnected_callback_failure_does_not_block_others():
+    ib = _make_mock_ib()
+    mgr = ConnectionManager(ib, host="127.0.0.1", port=7497, client_id=1)
+    fired = []
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    mgr.on_reconnected.append(_boom)
+    mgr.on_reconnected.append(lambda: fired.append(1))
+
+    with patch("tws_client.connection.asyncio.sleep", new_callable=AsyncMock):
+        await mgr._reconnect()
+    assert fired == [1]

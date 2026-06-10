@@ -2,8 +2,8 @@ import asyncio
 import importlib
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import ib_async as ibi
@@ -15,22 +15,25 @@ from core import (
     EventBus,
     FillEvent,
     Greeks,
+    Leg,
     LiveClock,
     MarketEvent,
     OrderEvent,
+    OrderStatusEvent,
     Position,
     SignalEvent,
     SimClock,
     ValidationResult,
 )
-from core.models import Contract
+from core.models import Contract, MarginInfo, contract_key
 from execution import LiveGateway
 from market_data.historical import HistoricalDataHandler
 from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
 from storage import DecisionLogger, StorageSubscriber, TickWriter, TradeStore
 from strategy.base import BaseStrategy
 from trading_app.config import TraderConfig
-from tws_client import ConnectionManager, LiveDataHandler
+from trading_app.watchdog import MarketDataWatchdog
+from tws_client import AccountState, ConnectionManager, LiveDataHandler
 
 logger = logging.getLogger(__name__)
 
@@ -38,42 +41,96 @@ MarketLookup = Callable[[str], MarketEvent | None]
 GreeksProvider = Callable[[], Greeks]
 ProposedGreeksProvider = Callable[[SignalEvent], Greeks]
 PositionsProvider = Callable[[], list[Position]]
-EquityProvider = Callable[[], float]
+EquityProvider = Callable[[], float | None]
+MarginCushionProvider = Callable[[], float | None]
+MarginInfoProvider = Callable[[], "MarginInfo | None"]
+MinDteProvider = Callable[[], int | None]
 FillRecorder = Callable[[FillEvent], None]
+GreeksLookup = Callable[[str], MarketEvent | None]
 
 
 class AppRiskState:
-    def __init__(self, initial_equity: float = 0.0) -> None:
+    def __init__(
+        self,
+        initial_equity: float = 0.0,
+        clock: LiveClock | SimClock | None = None,
+        greeks_lookup: GreeksLookup | None = None,
+    ) -> None:
         self._initial_equity = initial_equity
-        self._positions: list[Position] = []
+        self._clock = clock or LiveClock()
+        self._greeks_lookup = greeks_lookup or (lambda _key: None)
+        self._net: dict[str, Leg] = {}
+        self._strategy_by_key: dict[str, str] = {}
         self._realized_pnl: float = 0.0
 
     def record_fill(self, event: FillEvent) -> None:
-        if not event.legs_filled:
-            return
         for leg in event.legs_filled:
-            if leg.quantity < 0 and leg.entry_price:
-                self._realized_pnl += abs(leg.quantity) * leg.entry_price
-            elif leg.quantity > 0 and leg.entry_price:
-                self._realized_pnl -= abs(leg.quantity) * leg.entry_price
+            mult = leg.contract.multiplier if leg.contract.sec_type == "OPT" else 1
+            if leg.entry_price:
+                self._realized_pnl -= leg.quantity * leg.entry_price * mult
+            key = contract_key(leg.contract)
+            existing = self._net.get(key)
+            new_qty = (existing.quantity if existing else 0) + leg.quantity
+            if new_qty == 0:
+                self._net.pop(key, None)
+                self._strategy_by_key.pop(key, None)
+            else:
+                # entry_price on the netted Leg is last-fill price, not cost basis
+                self._net[key] = Leg(
+                    contract=leg.contract,
+                    quantity=new_qty,
+                    entry_price=leg.entry_price,
+                )
+                self._strategy_by_key[key] = event.strategy_id
         self._realized_pnl -= event.commission
-        self._positions.append(
-            Position(legs=event.legs_filled, strategy_id=event.order_id)
-        )
 
     def positions(self) -> list[Position]:
-        return list(self._positions)
+        # Semantic change (intentional fix): max_position_size now counts net open
+        # contract positions (one per contract_key), not historical fill count —
+        # the old behavior accumulated even closing fills, which was an audited bug.
+        return [
+            Position(legs=[leg], strategy_id=self._strategy_by_key.get(key, ""))
+            for key, leg in self._net.items()
+        ]
 
     def portfolio_greeks(self) -> Greeks:
         total = Greeks()
-        for position in self._positions:
-            if not position.greeks:
+        for key, leg in self._net.items():
+            if leg.contract.sec_type == "STK":
+                total = total + Greeks(delta=leg.quantity)
                 continue
-            total.delta += position.greeks.delta
-            total.gamma += position.greeks.gamma
-            total.vega += position.greeks.vega
-            total.theta += position.greeks.theta
+            market = self._greeks_lookup(key)
+            greeks = market.model_greeks if market else None
+            if greeks is None:
+                logger.debug("No greeks for %s; skipping", key)
+                continue
+            total = total + greeks * (leg.quantity * leg.contract.multiplier)
         return total
+
+    def min_dte(self) -> int | None:
+        dtes = []
+        for leg in self._net.values():
+            if leg.contract.sec_type != "OPT" or not leg.contract.expiry:
+                continue
+            try:
+                expiry_date = (
+                    datetime.strptime(leg.contract.expiry, "%Y%m%d")
+                    .replace(tzinfo=UTC)
+                    .date()
+                )
+            except ValueError:
+                logger.warning(
+                    "Malformed expiry %r on %s; skipping leg in min_dte",
+                    leg.contract.expiry,
+                    leg.contract.symbol,
+                )
+                continue
+            dtes.append((expiry_date - self._clock.now().date()).days)
+        return min(dtes) if dtes else None
+
+    def equity(self) -> float:
+        # backtest cash-flow approximation (known limitation); live path should use AccountState
+        return self._initial_equity + self._realized_pnl
 
     def proposed_greeks(self, signal: SignalEvent) -> Greeks:
         raw = signal.context.get("proposed_greeks")
@@ -90,9 +147,6 @@ class AppRiskState:
             )
         return Greeks()
 
-    def equity(self) -> float:
-        return self._initial_equity + self._realized_pnl
-
 
 class RiskPipeline:
     def __init__(
@@ -108,6 +162,9 @@ class RiskPipeline:
         proposed_greeks_provider: ProposedGreeksProvider | None = None,
         positions_provider: PositionsProvider | None = None,
         equity_provider: EquityProvider | None = None,
+        margin_cushion_provider: MarginCushionProvider | None = None,
+        margin_info_provider: MarginInfoProvider | None = None,
+        min_dte_provider: MinDteProvider | None = None,
         fill_recorder: FillRecorder | None = None,
         approved_by: str = "pre-trade-validator",
     ) -> None:
@@ -123,7 +180,12 @@ class RiskPipeline:
             lambda _signal: Greeks()
         )
         self._positions_provider = positions_provider or list
-        self._equity_provider = equity_provider or (lambda: 0.0)
+        self._equity_provider = equity_provider or (lambda: None)
+        self._margin_cushion_provider = margin_cushion_provider or (lambda: None)
+        self._margin_info_provider: MarginInfoProvider = margin_info_provider or (
+            lambda: None
+        )
+        self._min_dte_provider = min_dte_provider or (lambda: None)
         self._fill_recorder = fill_recorder
         self._approved_by = approved_by
 
@@ -144,11 +206,19 @@ class RiskPipeline:
             )
             return
 
+        if self._equity_provider() is None:
+            await self._log_decision(
+                signal,
+                ValidationResult(approved=False, reason="account data unavailable"),
+            )
+            return
+
         result = self._validator.validate(
             signal,
             portfolio_greeks=self._portfolio_greeks_provider(),
             proposed_greeks=self._proposed_greeks_provider(signal),
             positions=self._positions_provider(),
+            margin_info=self._margin_info_provider(),
         )
         await self._log_decision(signal, result)
 
@@ -163,22 +233,39 @@ class RiskPipeline:
             )
         )
 
-    async def on_fill(self, event: FillEvent) -> None:
-        if self._fill_recorder:
-            self._fill_recorder(event)
+    async def on_order_status(self, event: OrderStatusEvent) -> None:
+        if event.status in ("REJECTED", "CANCELLED"):
+            await self._bus.publish(
+                AlertEvent(
+                    message=f"Order {event.order_id} {event.status}: {event.reason}",
+                    value=0.0,
+                    timestamp=self._clock.now(),
+                )
+            )
 
+    async def check_now(self) -> None:
+        # NOTE: RealTimeMonitor is stateless — alerts repeat on each call while a
+        # condition persists (per-fill + periodic); future alert sinks need their
+        # own dedup.
         if not self._monitor:
             return
-
-        portfolio_greeks = self._portfolio_greeks_provider()
         equity = self._equity_provider()
-        for alert in self._monitor.check(portfolio_greeks, equity):
+        if equity is None:
+            logger.debug("Equity unavailable; skipping risk check")
+            return
+        greeks = self._portfolio_greeks_provider()
+        min_dte = self._min_dte_provider()
+        cushion = self._margin_cushion_provider()
+        for alert in self._monitor.check(
+            greeks, equity, min_dte=min_dte, margin_cushion=cushion
+        ):
             await self._bus.publish(alert)
-
         if (
             self._circuit_breaker
             and not self._circuit_breaker.is_triggered
-            and self._monitor.should_circuit_break(portfolio_greeks, equity)
+            and self._monitor.should_circuit_break(
+                greeks, equity, min_dte=min_dte, margin_cushion=cushion
+            )
         ):
             self._circuit_breaker.trigger()
             await self._bus.publish(
@@ -189,12 +276,24 @@ class RiskPipeline:
                 )
             )
 
+    async def on_fill(self, event: FillEvent) -> None:
+        if self._fill_recorder:
+            self._fill_recorder(event)
+        await self.check_now()
+
     async def _log_decision(
         self, signal: SignalEvent, result: ValidationResult
     ) -> None:
         market = self._market_lookup(_signal_symbol(signal))
         if self._decision_logger and market:
             await self._decision_logger.log(signal, market, result)
+
+
+def log_alerts(bus: EventBus) -> None:
+    async def _on_alert(event: AlertEvent) -> None:
+        logger.warning("ALERT: %s (value=%s)", event.message, event.value)
+
+    bus.subscribe(AlertEvent, _on_alert)
 
 
 @dataclass
@@ -235,14 +334,76 @@ class LiveApp:
     decision_logger: DecisionLogger
     circuit_breaker: CircuitBreaker
     contracts: Sequence[Contract]
+    account_state: AccountState
+    watchdog: MarketDataWatchdog
+    _reconnected: asyncio.Event = field(default_factory=asyncio.Event)
+    _shutdown: bool = False
+
+    def __post_init__(self) -> None:
+        self.connection.on_reconnected.append(self._reconnected.set)
+        self.bus.subscribe(MarketEvent, self.watchdog.on_market)
 
     async def connect(self) -> None:
         await self.connection.connect()
+        await self.account_state.start()
 
     async def run_market_data(self) -> None:
-        await publish_market_data(self.bus, self.data_handler, self.contracts)
+        # Live streams are infinite generators that hang on disconnect, so race
+        # the publish task against the reconnect signal: reconnect wins → cancel
+        # the dead streams and resubscribe; streams ending naturally (e.g.
+        # finite handlers) → wait for the sticky reconnect signal.
+        while not self._shutdown:
+            publish_task = asyncio.create_task(
+                publish_market_data(self.bus, self.data_handler, self.contracts)
+            )
+            reconnect_wait = asyncio.create_task(self._reconnected.wait())
+            try:
+                await asyncio.wait(
+                    {publish_task, reconnect_wait},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for task in (publish_task, reconnect_wait):
+                    task.cancel()
+                await asyncio.gather(
+                    publish_task, reconnect_wait, return_exceptions=True
+                )
+            if self._shutdown:
+                return
+            await self._reconnected.wait()  # sticky: may already be set
+            if self._shutdown:
+                return
+            self._reconnected.clear()
+            await self.bus.publish(
+                AlertEvent(
+                    message="market data restarting after reconnect",
+                    value=0.0,
+                    timestamp=self.clock.now(),
+                )
+            )
+
+    async def risk_check_loop(self, interval: float) -> None:
+        # Deliberately sleep before the first check so account/market data can
+        # populate; per-fill check_now() still covers the active period.
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.risk_pipeline.check_now()
+            except Exception:
+                logger.exception("Periodic risk check failed; loop continues")
+
+    async def watchdog_loop(self, interval: float = 10.0) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                for alert in self.watchdog.check_now():
+                    await self.bus.publish(alert)
+            except Exception:
+                logger.exception("Watchdog check failed; loop continues")
 
     async def close(self) -> None:
+        self._shutdown = True
+        self._reconnected.set()  # wake run_market_data so it can exit
         self.connection.disconnect()
         try:
             await self.storage_subscriber.stop()
@@ -263,7 +424,11 @@ async def build_backtest_app(
         bus, config.storage, contracts
     )
     decision_logger = _build_decision_logger(config.storage.decision_db)
-    risk_state = AppRiskState(initial_equity=config.risk.initial_equity)
+    risk_state = AppRiskState(
+        initial_equity=config.risk.initial_equity,
+        clock=clock,
+        greeks_lookup=storage_subscriber.last_market_by_contract,
+    )
     risk_pipeline = _wire_risk_pipeline(
         bus,
         clock,
@@ -309,7 +474,15 @@ async def build_live_app(
         bus, config.storage, contracts
     )
     decision_logger = _build_decision_logger(config.storage.decision_db)
-    risk_state = AppRiskState(initial_equity=config.risk.initial_equity)
+    account_state = AccountState(ib)
+    risk_state = AppRiskState(
+        initial_equity=config.risk.initial_equity,
+        clock=clock,
+        greeks_lookup=storage_subscriber.last_market_by_contract,
+    )
+    watchdog = MarketDataWatchdog(
+        clock=clock, stale_seconds=config.tws.stale_data_seconds
+    )
     risk_pipeline = _wire_risk_pipeline(
         bus,
         clock,
@@ -317,6 +490,10 @@ async def build_live_app(
         decision_logger,
         storage_subscriber.last_market,
         risk_state,
+        equity_provider=account_state.equity,
+        margin_cushion_provider=account_state.margin_cushion,
+        margin_info_provider=account_state.margin_info,
+        min_dte_provider=risk_state.min_dte,
     )
     bus.subscribe(OrderEvent, gateway.on_order)
     return LiveApp(
@@ -332,6 +509,8 @@ async def build_live_app(
         decision_logger=decision_logger,
         circuit_breaker=risk_pipeline.circuit_breaker,
         contracts=list(contracts),
+        account_state=account_state,
+        watchdog=watchdog,
     )
 
 
@@ -384,6 +563,10 @@ def _wire_risk_pipeline(
     decision_logger: DecisionLogger,
     market_lookup: MarketLookup,
     risk_state: AppRiskState,
+    equity_provider: EquityProvider | None = None,
+    margin_cushion_provider: MarginCushionProvider | None = None,
+    margin_info_provider: MarginInfoProvider | None = None,
+    min_dte_provider: MinDteProvider | None = None,
 ) -> RiskPipeline:
     circuit_breaker = CircuitBreaker()
     pipeline = RiskPipeline(
@@ -397,11 +580,20 @@ def _wire_risk_pipeline(
         portfolio_greeks_provider=risk_state.portfolio_greeks,
         proposed_greeks_provider=risk_state.proposed_greeks,
         positions_provider=risk_state.positions,
-        equity_provider=risk_state.equity,
+        equity_provider=equity_provider
+        if equity_provider is not None
+        else risk_state.equity,
+        margin_cushion_provider=margin_cushion_provider or (lambda: None),
+        margin_info_provider=margin_info_provider,
+        min_dte_provider=min_dte_provider
+        if min_dte_provider is not None
+        else risk_state.min_dte,
         fill_recorder=risk_state.record_fill,
     )
     bus.subscribe(SignalEvent, pipeline.on_signal)
     bus.subscribe(FillEvent, pipeline.on_fill)
+    bus.subscribe(OrderStatusEvent, pipeline.on_order_status)
+    log_alerts(bus)
     return pipeline
 
 

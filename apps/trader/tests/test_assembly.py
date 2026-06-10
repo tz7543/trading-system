@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -9,11 +10,18 @@ import pytest
 
 from core.bus import EventBus
 from core.clock import SimClock
-from core.events import AlertEvent, FillEvent, MarketEvent, OrderEvent, SignalEvent
-from core.models import Contract, Greeks, Leg, Order, RiskLimits
+from core.events import (
+    AlertEvent,
+    FillEvent,
+    MarketEvent,
+    OrderEvent,
+    OrderStatusEvent,
+    SignalEvent,
+)
+from core.models import Contract, Greeks, Leg, Order, RiskLimits, contract_key
 from core.partitions import tick_partition_path
 from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
-from strategy import DeltaHedgeStrategy
+from strategy import DeltaHedgeStrategy, GreeksCalculator
 from strategy.base import BaseStrategy
 from trading_app.assembly import (
     AppRiskState,
@@ -21,6 +29,7 @@ from trading_app.assembly import (
     build_backtest_app,
     build_live_app,
     load_strategy,
+    log_alerts,
     publish_market_data,
     subscribe_strategy,
 )
@@ -176,6 +185,12 @@ async def test_live_app_wires_delta_hedge_adjust_signal_to_gateway(tmp_path):
     ib.disconnect = MagicMock()
     ib.isConnected = MagicMock(return_value=False)
     ib.disconnectedEvent = ev.Event("disconnectedEvent")
+    ib.accountSummaryEvent = ev.Event("accountSummaryEvent")
+
+    async def _account_summary(account=""):
+        return [MagicMock(tag="NetLiquidation", value="1000000")]
+
+    ib.accountSummaryAsync = _account_summary
     trade = MagicMock()
     trade.orderStatus.orderId = 8
     trade.filledEvent = ev.Event("filledEvent")
@@ -191,6 +206,8 @@ async def test_live_app_wires_delta_hedge_adjust_signal_to_gateway(tmp_path):
 
     app = await build_live_app(config, ib=ib, contracts=[contract])
     try:
+        # live risk truth comes from AccountState; seed it so the signal passes
+        await app.account_state.start()
         strategy = DeltaHedgeStrategy(
             strategy_id="delta-hedge",
             bus=app.bus,
@@ -354,10 +371,129 @@ def test_app_risk_state_tracks_filled_positions_and_signal_greeks():
         context={"proposed_greeks": {"delta": 25.0, "vega": 3.0}},
     )
 
-    assert state.positions()[0].strategy_id == "sim-1"
+    # strategy_id is now taken from FillEvent.strategy_id (was order_id in old code)
+    assert state.positions()[0].strategy_id == ""
     assert state.equity() == 100000.0 - 100 * 105.0 - 1.0
     assert state.proposed_greeks(signal).delta == 25.0
     assert state.proposed_greeks(signal).vega == 3.0
+
+
+# ---------------------------------------------------------------------------
+# Task 6 helpers
+# ---------------------------------------------------------------------------
+
+
+def _opt(strike, right) -> Contract:
+    return Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20991231", strike=strike, right=right
+    )
+
+
+def _clock() -> SimClock:
+    return SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+
+
+def _now() -> datetime:
+    return datetime(2026, 6, 10, tzinfo=UTC)
+
+
+def _mkt(
+    symbol: str, *, contract: Contract | None = None, model_greeks: Greeks | None = None
+) -> MarketEvent:
+    return MarketEvent(
+        symbol=symbol,
+        timestamp=_now(),
+        bid=1.0,
+        ask=2.0,
+        last=1.5,
+        volume=10,
+        contract=contract,
+        model_greeks=model_greeks,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 6 tests
+# ---------------------------------------------------------------------------
+
+
+def test_netting_open_close_removes_position():
+    state = AppRiskState(clock=SimClock(datetime(2026, 6, 10, tzinfo=UTC)))
+    leg = Leg(contract=_opt(150.0, "C"), quantity=-1, entry_price=2.0)
+    state.record_fill(FillEvent("o1", [leg], datetime.now(UTC), 1.0, "s1"))
+    closing = Leg(contract=_opt(150.0, "C"), quantity=1, entry_price=1.0)
+    state.record_fill(FillEvent("o2", [closing], datetime.now(UTC), 1.0, "s1"))
+    assert state.positions() == []
+    assert state.min_dte() is None
+
+
+def test_portfolio_greeks_per_contract_lookup():
+    call, put = _opt(150.0, "C"), _opt(140.0, "P")
+    events = {
+        contract_key(call): _mkt("AAPL", contract=call, model_greeks=Greeks(delta=0.5)),
+        contract_key(put): _mkt("AAPL", contract=put, model_greeks=Greeks(delta=-0.3)),
+    }
+    state = AppRiskState(clock=_clock(), greeks_lookup=events.get)
+    state.record_fill(FillEvent("o1", [Leg(call, 1)], _now(), 0.0, "s1"))
+    state.record_fill(FillEvent("o2", [Leg(put, 2)], _now(), 0.0, "s1"))
+    assert all(p.strategy_id == "s1" for p in state.positions())
+    g = state.portfolio_greeks()
+    assert g.delta == pytest.approx(0.5 * 100 + (-0.3) * 2 * 100)
+
+
+def test_stock_delta_no_multiplier():
+    stk = Contract(symbol="AAPL", sec_type="STK")
+    state = AppRiskState(clock=_clock(), greeks_lookup=lambda k: None)
+    state.record_fill(FillEvent("o1", [Leg(stk, 100)], _now(), 0.0, "s1"))
+    assert state.portfolio_greeks().delta == pytest.approx(100)
+
+
+def test_greeks_parity_with_composite_single_symbol():
+    # Single symbol scenario: AppRiskState aggregation == GreeksCalculator.composite
+    opt = _opt(150.0, "C")
+    greeks = Greeks(delta=0.5, gamma=0.02, vega=0.1, theta=-0.05)
+    legs = [Leg(contract=opt, quantity=2)]
+    expected = GreeksCalculator.composite(legs, {"AAPL": greeks})
+    state = AppRiskState(
+        clock=_clock(),
+        greeks_lookup={
+            contract_key(opt): _mkt("AAPL", contract=opt, model_greeks=greeks)
+        }.get,
+    )
+    state.record_fill(FillEvent("o1", legs, _now(), 0.0, "s1"))
+    actual = state.portfolio_greeks()
+    assert actual.delta == pytest.approx(expected.delta)
+    assert actual.vega == pytest.approx(expected.vega)
+    assert actual.theta == pytest.approx(expected.theta)
+
+
+def test_cashflow_uses_multiplier():
+    state = AppRiskState(initial_equity=10_000.0, clock=_clock())
+    leg = Leg(contract=_opt(150.0, "C"), quantity=-1, entry_price=2.0)
+    state.record_fill(FillEvent("o1", [leg], _now(), 1.0, "s1"))
+    assert state.equity() == pytest.approx(10_000.0 + 2.0 * 100 - 1.0)
+
+
+def test_min_dte():
+    state = AppRiskState(clock=SimClock(datetime(2026, 6, 10, tzinfo=UTC)))
+    near = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260620", strike=150.0, right="C"
+    )
+    state.record_fill(FillEvent("o1", [Leg(near, -1)], _now(), 0.0, "s1"))
+    assert state.min_dte() == 10
+
+
+def test_min_dte_skips_malformed_expiry():
+    state = AppRiskState(clock=SimClock(datetime(2026, 6, 10, tzinfo=UTC)))
+    bad = Contract(symbol="AAPL", sec_type="OPT", expiry="BAD", strike=150.0, right="C")
+    state.record_fill(FillEvent("o1", [Leg(bad, -1)], _now(), 0.0, "s1"))
+    assert state.min_dte() is None
+
+    near = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260620", strike=155.0, right="C"
+    )
+    state.record_fill(FillEvent("o2", [Leg(near, -1)], _now(), 0.0, "s1"))
+    assert state.min_dte() == 10  # malformed leg skipped, valid leg counted
 
 
 class _FakeDataHandler:
@@ -417,3 +553,374 @@ def _tick(timestamp: datetime, last: float) -> dict:
         "model_iv": None,
         "model_underlying": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 9 helpers
+# ---------------------------------------------------------------------------
+
+
+class _RecordingDecisionLogger:
+    def __init__(self) -> None:
+        self.decisions = []
+
+    async def log(self, signal, market, result) -> None:
+        self.decisions.append(result)
+
+
+def _make_pipeline(
+    bus: EventBus,
+    clock: SimClock,
+    equity_provider=None,
+    margin_cushion_provider=None,
+    decision_logger=None,
+) -> tuple[RiskPipeline, list[AlertEvent]]:
+    alerts: list[AlertEvent] = []
+
+    async def capture_alert(event: AlertEvent) -> None:
+        alerts.append(event)
+
+    bus.subscribe(AlertEvent, capture_alert)
+    circuit_breaker = CircuitBreaker()
+    pipeline = RiskPipeline(
+        bus=bus,
+        validator=PreTradeValidator(_risk_limits()),
+        clock=clock,
+        decision_logger=decision_logger,
+        market_lookup=lambda _symbol: _mkt("AAPL"),
+        monitor=RealTimeMonitor(_risk_limits(), clock),
+        circuit_breaker=circuit_breaker,
+        portfolio_greeks_provider=lambda: Greeks(delta=10.0),
+        equity_provider=equity_provider
+        if equity_provider is not None
+        else (lambda: 100_000.0),
+        margin_cushion_provider=margin_cushion_provider or (lambda: None),
+    )
+    log_alerts(bus)
+    return pipeline, alerts
+
+
+# ---------------------------------------------------------------------------
+# Task 9 tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rejected_status_emits_alert():
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    pipeline, alerts = _make_pipeline(bus, clock)
+    bus.subscribe(OrderStatusEvent, pipeline.on_order_status)
+    await bus.publish(
+        OrderStatusEvent(
+            order_id="o1",
+            status="REJECTED",
+            timestamp=clock.now(),
+            reason="margin",
+        )
+    )
+    assert any("REJECTED" in a.message and "margin" in a.message for a in alerts)
+
+
+@pytest.mark.asyncio
+async def test_check_now_triggers_circuit_break_on_margin():
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    # margin_cushion_provider returns 0.01 → below 0.02 threshold → circuit break
+    pipeline, alerts = _make_pipeline(bus, clock, margin_cushion_provider=lambda: 0.01)
+    await pipeline.check_now()
+    assert pipeline.circuit_breaker.is_triggered
+    assert any("Circuit breaker" in a.message for a in alerts)
+
+
+@pytest.mark.asyncio
+async def test_equity_none_skips_checks_and_rejects_signals():
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    decision_logger = _RecordingDecisionLogger()
+    pipeline, alerts = _make_pipeline(
+        bus, clock, equity_provider=lambda: None, decision_logger=decision_logger
+    )
+    orders_published: list[OrderEvent] = []
+
+    async def capture_order(event: OrderEvent) -> None:
+        orders_published.append(event)
+
+    bus.subscribe(OrderEvent, capture_order)
+
+    # check_now with None equity → no circuit break, no alerts
+    await pipeline.check_now()
+    assert not pipeline.circuit_breaker.is_triggered
+    assert alerts == []
+
+    # on_signal with None equity → order rejected, not published
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    await pipeline.on_signal(_signal(clock, contract))
+    assert orders_published == []
+    assert decision_logger.decisions[-1].approved is False
+    assert "account data unavailable" in decision_logger.decisions[-1].reason
+
+
+@pytest.mark.asyncio
+async def test_alert_logger_subscriber(caplog):
+    import logging
+
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+
+    log_alerts(bus)
+    with caplog.at_level(logging.WARNING, logger="trading_app.assembly"):
+        await bus.publish(
+            AlertEvent(
+                message="test-alert-msg",
+                value=42.0,
+                timestamp=clock.now(),
+            )
+        )
+    assert any("test-alert-msg" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2b: RiskPipeline rejects when margin_info_provider over max_margin_utilization
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_risk_pipeline_rejects_signal_when_margin_utilization_exceeded():
+    """margin_info_provider returns init_margin/equity_with_loan > max (0.80).
+    The signal must be rejected (no OrderEvent published)."""
+    from core.models import MarginInfo
+
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    orders_published: list[OrderEvent] = []
+
+    async def capture_order(event: OrderEvent) -> None:
+        orders_published.append(event)
+
+    bus.subscribe(OrderEvent, capture_order)
+
+    # init_margin/equity_with_loan = 90000/100000 = 0.90 > 0.80 limit
+    def margin_provider() -> MarginInfo:
+        return MarginInfo(
+            init_margin=90000.0, maint_margin=80000.0, equity_with_loan=100000.0
+        )
+
+    pipeline = RiskPipeline(
+        bus=bus,
+        validator=PreTradeValidator(_risk_limits()),
+        clock=clock,
+        equity_provider=lambda: 100_000.0,
+        margin_info_provider=margin_provider,
+    )
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    await pipeline.on_signal(_signal(clock, contract))
+
+    assert orders_published == []
+
+
+@pytest.mark.asyncio
+async def test_risk_pipeline_approves_signal_when_margin_within_limit():
+    """margin_info_provider returns utilization < max (0.80). Signal approved."""
+    from core.models import MarginInfo
+
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    orders_published: list[OrderEvent] = []
+
+    async def capture_order(event: OrderEvent) -> None:
+        orders_published.append(event)
+
+    bus.subscribe(OrderEvent, capture_order)
+
+    # init_margin/equity_with_loan = 50000/100000 = 0.50 < 0.80 limit
+    def margin_provider() -> MarginInfo:
+        return MarginInfo(
+            init_margin=50000.0, maint_margin=40000.0, equity_with_loan=100000.0
+        )
+
+    pipeline = RiskPipeline(
+        bus=bus,
+        validator=PreTradeValidator(_risk_limits()),
+        clock=clock,
+        equity_provider=lambda: 100_000.0,
+        margin_info_provider=margin_provider,
+    )
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    await pipeline.on_signal(_signal(clock, contract))
+
+    assert len(orders_published) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 10: live reconnect loop
+# ---------------------------------------------------------------------------
+
+
+class CountingDataHandler:
+    """Each subscribe_quote ends the stream immediately (covers the
+    streams-ended branch of the reconnect loop)."""
+
+    def __init__(self) -> None:
+        self.subscribe_count = 0
+
+    async def subscribe_quote(self, contract):
+        self.subscribe_count += 1
+        return
+        yield  # pragma: no cover — makes this an async generator
+
+
+class HangingDataHandler:
+    """Each subscribe_quote hangs forever, like the live feed's infinite
+    generator stuck on queue.get() after a TWS disconnect."""
+
+    def __init__(self) -> None:
+        self.subscribe_count = 0
+
+    async def subscribe_quote(self, contract):
+        self.subscribe_count += 1
+        await asyncio.Event().wait()
+        yield  # pragma: no cover — makes this an async generator
+
+
+async def _make_live_app(tmp_path):
+    ib = MagicMock()
+    ib.disconnect = MagicMock()
+    ib.isConnected = MagicMock(return_value=False)
+    ib.disconnectedEvent = ev.Event("disconnectedEvent")
+    config = TraderConfig(
+        storage=StorageConfig(
+            ticks_dir=tmp_path / "ticks",
+            decision_db=tmp_path / "decisions.duckdb",
+            trade_db=tmp_path / "orders.db",
+        )
+    )
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    return await build_live_app(config, ib=ib, contracts=[contract])
+
+
+@pytest.fixture
+async def live_app_env(tmp_path):
+    app = await _make_live_app(tmp_path)
+    handler = CountingDataHandler()
+    app.data_handler = handler
+    yield app, handler
+    await app.close()
+
+
+@pytest.fixture
+async def hanging_live_app_env(tmp_path):
+    app = await _make_live_app(tmp_path)
+    handler = HangingDataHandler()
+    app.data_handler = handler
+    yield app, handler
+    await app.close()
+
+
+@pytest.mark.asyncio
+async def test_run_market_data_resubscribes_after_reconnect(live_app_env):
+    app, handler = live_app_env
+    app._reconnected.set()  # sticky scenario: callback fired before wait
+    task = asyncio.create_task(app.run_market_data())
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if handler.subscribe_count >= 2:
+            break
+    app._shutdown = True
+    app._reconnected.set()
+    await asyncio.wait_for(task, timeout=1)
+    assert handler.subscribe_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_run_market_data_cancels_hung_streams_on_reconnect(
+    hanging_live_app_env,
+):
+    app, handler = hanging_live_app_env
+    task = asyncio.create_task(app.run_market_data())
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if handler.subscribe_count >= 1:
+            break
+    assert handler.subscribe_count == 1  # first round subscribed and hung
+
+    # fire the reconnect callback exactly as ConnectionManager would
+    for callback in app.connection.on_reconnected:
+        callback()
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if handler.subscribe_count >= 2:
+            break
+    assert handler.subscribe_count >= 2  # hung streams cancelled, resubscribed
+
+    app._shutdown = True
+    app._reconnected.set()
+    await asyncio.wait_for(task, timeout=1)  # clean exit
+
+
+@pytest.mark.asyncio
+async def test_run_market_data_exits_on_shutdown(live_app_env):
+    app, _handler = live_app_env
+    task = asyncio.create_task(app.run_market_data())
+    await asyncio.sleep(0)
+    app._shutdown = True
+    app._reconnected.set()
+    await asyncio.wait_for(task, timeout=1)  # passes if it does not hang
+
+
+@pytest.mark.asyncio
+async def test_risk_check_loop_survives_exceptions(live_app_env):
+    app, _handler = live_app_env
+    calls: list[int] = []
+
+    async def flaky_check_now() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+
+    app.risk_pipeline.check_now = flaky_check_now
+    task = asyncio.create_task(app.risk_check_loop(0.001))
+    for _ in range(200):
+        await asyncio.sleep(0.001)
+        if len(calls) >= 2:
+            break
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) >= 2  # loop kept running after the exception
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: greeks_lookup wiring (spec §3.3 — shared by both paths)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_live_app_wires_greeks_lookup_to_storage_subscriber(live_app_env):
+    app, _handler = live_app_env
+    assert (
+        app.risk_state._greeks_lookup == app.storage_subscriber.last_market_by_contract
+    )
+
+
+@pytest.mark.asyncio
+async def test_backtest_app_wires_greeks_lookup_to_storage_subscriber(tmp_path):
+    config = TraderConfig(
+        backtest=BacktestConfig(ticks_dir=tmp_path / "input_ticks"),
+        storage=StorageConfig(
+            ticks_dir=tmp_path / "ticks",
+            decision_db=tmp_path / "decisions.duckdb",
+            trade_db=tmp_path / "orders.db",
+        ),
+    )
+    app = await build_backtest_app(
+        config,
+        contracts=[Contract(symbol="AAPL", sec_type="STK")],
+        start=datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    try:
+        assert (
+            app.risk_state._greeks_lookup
+            == app.storage_subscriber.last_market_by_contract
+        )
+    finally:
+        await app.close()

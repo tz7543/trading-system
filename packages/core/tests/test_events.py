@@ -6,6 +6,7 @@ from core.events import (
     FillEvent,
     MarketEvent,
     OrderEvent,
+    OrderStatusEvent,
     SignalEvent,
 )
 from core.models import Contract, Greeks, Leg, Order
@@ -122,3 +123,53 @@ def test_alert_event():
     )
     assert event.message == "Delta breach"
     assert event.value == 550.0
+
+
+def _order() -> Order:
+    leg = Leg(contract=Contract(symbol="AAPL", sec_type="STK"), quantity=100)
+    return Order(legs=[leg], strategy_id="s1")
+
+
+def test_order_event_mints_order_id():
+    e1 = OrderEvent(order=_order(), timestamp=datetime.now(UTC), approved_by="v")
+    e2 = OrderEvent(order=_order(), timestamp=datetime.now(UTC), approved_by="v")
+    assert e1.order_id and e2.order_id
+    assert e1.order_id != e2.order_id
+
+
+def test_fill_event_carries_strategy_id():
+    fill = FillEvent(
+        order_id="oid-1",
+        legs_filled=[],
+        timestamp=datetime.now(UTC),
+        commission=0.0,
+        strategy_id="s1",
+    )
+    assert fill.strategy_id == "s1"
+
+
+def test_order_status_event_fields():
+    e = OrderStatusEvent(
+        order_id="oid-1",
+        status="REJECTED",
+        timestamp=datetime.now(UTC),
+        broker_order_id="7",
+        reason="margin",
+    )
+    assert e.status == "REJECTED"
+    assert e.filled_quantity == 0
+    assert e.remaining_quantity == 0
+
+
+def test_market_event_optional_contract():
+    c = Contract(symbol="AAPL", sec_type="STK")
+    e = MarketEvent(
+        symbol="AAPL",
+        timestamp=datetime.now(UTC),
+        bid=1.0,
+        ask=2.0,
+        last=1.5,
+        volume=10,
+        contract=c,
+    )
+    assert e.contract is c

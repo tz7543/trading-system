@@ -22,7 +22,9 @@ def to_ib_contract(contract: Contract) -> ibi.Contract:
     raise ValueError(f"Unsupported sec_type: {contract.sec_type}")
 
 
-def ticker_to_market_event(ticker: ibi.Ticker, symbol: str) -> MarketEvent:
+def ticker_to_market_event(
+    ticker: ibi.Ticker, symbol: str, contract: Contract | None = None
+) -> MarketEvent:
     model_greeks = None
     if ticker.modelGreeks:
         mg = ticker.modelGreeks
@@ -44,6 +46,7 @@ def ticker_to_market_event(ticker: ibi.Ticker, symbol: str) -> MarketEvent:
         if ticker.volume and not math.isnan(ticker.volume)
         else 0,
         model_greeks=model_greeks,
+        contract=contract,
     )
 
 

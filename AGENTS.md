@@ -79,6 +79,8 @@ data handler, clock, and execution gateway implementations.
 - `uv run ruff check .` - lint imports, modernization, bugbear, simplify, and
   Ruff rules.
 - `uv run ruff format .` - format Python files.
+- `git config core.hooksPath scripts/githooks` - enable the pre-commit hook that
+  runs ruff lint + full pytest before every commit.
 
 ## Coding Style & Naming Conventions
 

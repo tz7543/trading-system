@@ -121,6 +121,21 @@ def test_read_sorts_by_timestamp_across_batches(tmp_path):
     assert events[0].timestamp < events[1].timestamp < events[2].timestamp
 
 
+def test_read_events_carry_contract(tmp_path):
+    contract = Contract(
+        symbol="AAPL260620C00150000",
+        sec_type="OPT",
+        expiry="20260620",
+        strike=150.0,
+        right="C",
+    )
+    _write_parquet(tick_partition_path(tmp_path, contract, "2026-06-04"), [_opt_row()])
+    reader = TickReader(tmp_path)
+    events = reader.read(contract)
+    assert len(events) == 1
+    assert events[0].contract is contract
+
+
 def test_read_empty_returns_empty(tmp_path):
     reader = TickReader(tmp_path)
     events = reader.read(Contract(symbol="MSFT", sec_type="STK"))

@@ -14,7 +14,7 @@ class PreTradeValidator:
         positions: list[Position],
         margin_info: MarginInfo | None = None,
     ) -> ValidationResult:
-        new_count = len(positions) + 1
+        new_count = len(positions) + len(signal.proposed_order.legs)
         if new_count > self._limits.max_position_size:
             return ValidationResult(
                 approved=False,
