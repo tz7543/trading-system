@@ -428,10 +428,10 @@ async def test_tick_routing_uses_event_contract(tmp_path, subscriber_env):
     await bus.publish(_market_event("AAPL", contract=stk, last=200.0))
     await bus.publish(_market_event("AAPL", contract=opt, last=5.0))
     subscriber._tick_writer.close()  # flush
-    stk_dir = tmp_path / "sec_type=STK" / "symbol=AAPL"
-    opt_dir = tmp_path / "sec_type=OPT" / "symbol=AAPL"
-    assert list(stk_dir.rglob("*.parquet"))
-    assert list(opt_dir.rglob("*.parquet"))
+    # 路徑無關斷言：不假設 fixture 的 base dir 前綴，整樹掃描分區段
+    files = [str(p) for p in tmp_path.rglob("*.parquet")]
+    assert any("sec_type=STK" in f and "symbol=AAPL" in f for f in files)
+    assert any("sec_type=OPT" in f and "strike=150.0" in f for f in files)
 
 
 async def test_on_status_logged(subscriber_env):
@@ -970,6 +970,52 @@ rtk git add apps/trader && rtk git commit -m "feat(app): AppRiskState netting, p
 
 ---
 
+### Task 6b: PreTradeValidator — 多腿訂單按 leg 數計算部位（計畫審查迭代 2 採納）
+
+**Files:**
+- Modify: `packages/risk/src/risk/pre_trade.py:17`
+- Test: `packages/risk/tests/test_pre_trade.py`
+
+- [ ] **Step 1: 寫失敗測試**
+
+```python
+def test_multi_leg_order_counts_each_leg():
+    limits = RiskLimits(max_delta=1e9, max_vega=1e9, max_drawdown=0.5,
+                        max_position_size=3, max_margin_utilization=1.0)
+    validator = PreTradeValidator(limits)
+    # 4 腿 iron condor、現有 0 部位：4 > 3 → 拒絕
+    signal = _signal_with_legs(4)
+    result = validator.validate(signal, Greeks(), Greeks(), positions=[])
+    assert not result.approved
+    assert "Position limit" in result.reason
+```
+
+- [ ] **Step 2: 確認失敗**
+
+Run: `uv run pytest packages/risk/tests/test_pre_trade.py -k multi_leg -v`
+Expected: FAIL（現行 `len(positions)+1` 算 1，通過驗證）
+
+- [ ] **Step 3: 實作**
+
+`pre_trade.py:17` 一行變更：
+
+```python
+        new_count = len(positions) + len(signal.proposed_order.legs)
+```
+
+（與 AppRiskState 的「每 contract_key 一個淨部位」語意一致：N 腿訂單最多
+新增 N 個淨部位。risk 包仍只依賴 core——無架構違規。）
+
+- [ ] **Step 4: 跑 risk 測試 + Commit**
+
+Run: `uv run pytest packages/risk/tests -q` → PASS
+
+```bash
+rtk git add packages/risk && rtk git commit -m "fix(risk): count each proposed leg toward max_position_size"
+```
+
+---
+
 ### Task 7: AccountState（tws-client）
 
 **Files:**
@@ -1444,10 +1490,12 @@ async def test_run_market_data_exits_on_shutdown(live_app_env):
 `test_cli.py`：task 生命週期——
 
 ```python
-async def test_run_live_creates_and_cancels_loop_tasks(monkeypatch):
+def test_run_live_creates_and_cancels_loop_tasks(monkeypatch):
+    # 注意：必須是同步 def——cli.main() 內部呼叫 asyncio.run()，
+    # 在 pytest-asyncio 的 async 測試內會 RuntimeError（雙重 loop）。
     # mock build_live_app 回傳 stub app（connect/run_market_data/
     # risk_check_loop/watchdog_loop/close 均為記錄呼叫的 stub coroutine），
-    # mock shutdown event 立即 set。
+    # mock signal handler 安裝後立即 set shutdown event。
     calls = []
     app = _StubLiveApp(calls)
     monkeypatch.setattr("trading_app.cli.build_live_app", _returns(app))

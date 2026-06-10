@@ -13,7 +13,9 @@ TWS 重連後行情靜默死亡、DTE/保證金警報是死代碼。paper smoke 
 ## 2. 範圍
 
 **包含**：T0.1 紅燈測試、T0.2 pre-commit、T0.3 paper/live 守門、T1.1 訂單 ID 統一、
-T1.2 訂單狀態閉環、T1.3 風控真值改用 IB account、T1.4 重連重訂閱 + watchdog。
+T1.2 訂單狀態閉環、T1.3 風控真值改用 IB account、T1.4 重連重訂閱 + watchdog；
+另含計畫審查迭代 2 採納的小幅修正：PreTradeValidator 按 proposed legs 數
+計算 max_position_size（與沖銷後「每 contract_key 一淨部位」語意對齊）。
 
 **不包含**（明確擱置）：float→Decimal、回測 streaming（個股為主，資料量小）、
 回測路徑的 mark-to-market equity（記錄為已知限制）、bus 泛型型別、CI/CD、
