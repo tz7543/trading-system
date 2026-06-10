@@ -419,6 +419,7 @@ def test_portfolio_greeks_per_contract_lookup():
     state = AppRiskState(clock=_clock(), greeks_lookup=events.get)
     state.record_fill(FillEvent("o1", [Leg(call, 1)], _now(), 0.0, "s1"))
     state.record_fill(FillEvent("o2", [Leg(put, 2)], _now(), 0.0, "s1"))
+    assert all(p.strategy_id == "s1" for p in state.positions())
     g = state.portfolio_greeks()
     assert g.delta == pytest.approx(0.5 * 100 + (-0.3) * 2 * 100)
 
