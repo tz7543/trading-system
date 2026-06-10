@@ -984,7 +984,19 @@ def test_multi_leg_order_counts_each_leg():
                         max_position_size=3, max_margin_utilization=1.0)
     validator = PreTradeValidator(limits)
     # 4 腿 iron condor、現有 0 部位：4 > 3 → 拒絕
-    signal = _signal_with_legs(4)
+    # 用既有 _signal(legs=...) helper（test_pre_trade.py:18）；
+    # 合約直接內聯建構，不引用任何不存在的 helper
+    legs = [
+        Leg(
+            contract=Contract(symbol="SPY", sec_type="OPT", expiry="20260119",
+                              strike=float(strike), right=right),
+            quantity=qty,
+        )
+        for strike, right, qty in
+        [(140, "P", 1), (145, "P", -1), (155, "C", -1), (160, "C", 1)]
+    ]
+    signal = _signal(legs=legs)
+    # 若該測試檔尚未 import Contract/Leg，從 core.models 補 import
     result = validator.validate(signal, Greeks(), Greeks(), positions=[])
     assert not result.approved
     assert "Position limit" in result.reason
