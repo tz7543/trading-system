@@ -686,8 +686,8 @@ async def test_alert_logger_subscriber(caplog):
 
 
 class CountingDataHandler:
-    """Each subscribe_quote ends the stream immediately (simulates a dead
-    stream after disconnect)."""
+    """Each subscribe_quote ends the stream immediately (covers the
+    streams-ended branch of the reconnect loop)."""
 
     def __init__(self) -> None:
         self.subscribe_count = 0
@@ -698,8 +698,20 @@ class CountingDataHandler:
         yield  # pragma: no cover — makes this an async generator
 
 
-@pytest.fixture
-async def live_app_env(tmp_path):
+class HangingDataHandler:
+    """Each subscribe_quote hangs forever, like the live feed's infinite
+    generator stuck on queue.get() after a TWS disconnect."""
+
+    def __init__(self) -> None:
+        self.subscribe_count = 0
+
+    async def subscribe_quote(self, contract):
+        self.subscribe_count += 1
+        await asyncio.Event().wait()
+        yield  # pragma: no cover — makes this an async generator
+
+
+async def _make_live_app(tmp_path):
     ib = MagicMock()
     ib.disconnect = MagicMock()
     ib.isConnected = MagicMock(return_value=False)
@@ -712,8 +724,22 @@ async def live_app_env(tmp_path):
         )
     )
     contract = Contract(symbol="AAPL", sec_type="STK")
-    app = await build_live_app(config, ib=ib, contracts=[contract])
+    return await build_live_app(config, ib=ib, contracts=[contract])
+
+
+@pytest.fixture
+async def live_app_env(tmp_path):
+    app = await _make_live_app(tmp_path)
     handler = CountingDataHandler()
+    app.data_handler = handler
+    yield app, handler
+    await app.close()
+
+
+@pytest.fixture
+async def hanging_live_app_env(tmp_path):
+    app = await _make_live_app(tmp_path)
+    handler = HangingDataHandler()
     app.data_handler = handler
     yield app, handler
     await app.close()
@@ -735,6 +761,32 @@ async def test_run_market_data_resubscribes_after_reconnect(live_app_env):
 
 
 @pytest.mark.asyncio
+async def test_run_market_data_cancels_hung_streams_on_reconnect(
+    hanging_live_app_env,
+):
+    app, handler = hanging_live_app_env
+    task = asyncio.create_task(app.run_market_data())
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if handler.subscribe_count >= 1:
+            break
+    assert handler.subscribe_count == 1  # first round subscribed and hung
+
+    # fire the reconnect callback exactly as ConnectionManager would
+    for callback in app.connection.on_reconnected:
+        callback()
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if handler.subscribe_count >= 2:
+            break
+    assert handler.subscribe_count >= 2  # hung streams cancelled, resubscribed
+
+    app._shutdown = True
+    app._reconnected.set()
+    await asyncio.wait_for(task, timeout=1)  # clean exit
+
+
+@pytest.mark.asyncio
 async def test_run_market_data_exits_on_shutdown(live_app_env):
     app, _handler = live_app_env
     task = asyncio.create_task(app.run_market_data())
@@ -742,6 +794,27 @@ async def test_run_market_data_exits_on_shutdown(live_app_env):
     app._shutdown = True
     app._reconnected.set()
     await asyncio.wait_for(task, timeout=1)  # passes if it does not hang
+
+
+@pytest.mark.asyncio
+async def test_risk_check_loop_survives_exceptions(live_app_env):
+    app, _handler = live_app_env
+    calls: list[int] = []
+
+    async def flaky_check_now() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+
+    app.risk_pipeline.check_now = flaky_check_now
+    task = asyncio.create_task(app.risk_check_loop(0.001))
+    for _ in range(200):
+        await asyncio.sleep(0.001)
+        if len(calls) >= 2:
+            break
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) >= 2  # loop kept running after the exception
 
 
 # ---------------------------------------------------------------------------

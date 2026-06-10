@@ -342,11 +342,29 @@ class LiveApp:
         await self.account_state.start()
 
     async def run_market_data(self) -> None:
+        # Live streams are infinite generators that hang on disconnect, so race
+        # the publish task against the reconnect signal: reconnect wins → cancel
+        # the dead streams and resubscribe; streams ending naturally (e.g.
+        # finite handlers) → wait for the sticky reconnect signal.
         while not self._shutdown:
-            await publish_market_data(self.bus, self.data_handler, self.contracts)
+            publish_task = asyncio.create_task(
+                publish_market_data(self.bus, self.data_handler, self.contracts)
+            )
+            reconnect_wait = asyncio.create_task(self._reconnected.wait())
+            try:
+                await asyncio.wait(
+                    {publish_task, reconnect_wait},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for task in (publish_task, reconnect_wait):
+                    task.cancel()
+                await asyncio.gather(
+                    publish_task, reconnect_wait, return_exceptions=True
+                )
             if self._shutdown:
                 return
-            await self._reconnected.wait()
+            await self._reconnected.wait()  # sticky: may already be set
             self._reconnected.clear()
             await self.bus.publish(
                 AlertEvent(
@@ -357,15 +375,23 @@ class LiveApp:
             )
 
     async def risk_check_loop(self, interval: float) -> None:
+        # Deliberately sleep before the first check so account/market data can
+        # populate; per-fill check_now() still covers the active period.
         while True:
             await asyncio.sleep(interval)
-            await self.risk_pipeline.check_now()
+            try:
+                await self.risk_pipeline.check_now()
+            except Exception:
+                logger.exception("Periodic risk check failed; loop continues")
 
     async def watchdog_loop(self, interval: float = 10.0) -> None:
         while True:
             await asyncio.sleep(interval)
-            for alert in self.watchdog.check_now():
-                await self.bus.publish(alert)
+            try:
+                for alert in self.watchdog.check_now():
+                    await self.bus.publish(alert)
+            except Exception:
+                logger.exception("Watchdog check failed; loop continues")
 
     async def close(self) -> None:
         self._shutdown = True
