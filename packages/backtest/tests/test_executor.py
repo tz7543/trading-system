@@ -52,10 +52,13 @@ async def test_fill_stk_at_last_price():
 
     bus.subscribe(FillEvent, capture_fill)
     legs = [Leg(contract=Contract(symbol="AAPL", sec_type="STK"), quantity=100)]
-    await executor.on_order(_order_event(legs))
+    order_event = _order_event(legs)
+    await executor.on_order(order_event)
     snapshot = {"AAPL": _stk_market(last=150.0)}
     fills = await executor.fill_pending(snapshot)
     assert len(fills) == 1
+    assert fills[0].order_id == order_event.order_id
+    assert fills[0].strategy_id == order_event.order.strategy_id
     assert fills[0].legs_filled[0].entry_price == 150.0
     # Commission: max($0.005/share * 100, $1.00) = $1.00
     assert fills[0].commission == pytest.approx(1.00)

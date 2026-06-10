@@ -9,7 +9,6 @@ class SimulatedExecutor:
         self._bus = bus
         self._clock = clock
         self._pending: list[OrderEvent] = []
-        self._fill_counter = 0
 
     async def on_order(self, event: OrderEvent) -> None:
         self._pending.append(event)
@@ -37,12 +36,12 @@ class SimulatedExecutor:
                 )
                 total_commission += _commission(leg)
             total_commission = max(total_commission, 1.0)
-            self._fill_counter += 1
             fill = FillEvent(
-                order_id=f"sim-{self._fill_counter}",
+                order_id=order_event.order_id,
                 legs_filled=legs_filled,
                 timestamp=self._clock.now(),
                 commission=total_commission,
+                strategy_id=order_event.order.strategy_id,
             )
             fills.append(fill)
             await self._bus.publish(fill)
