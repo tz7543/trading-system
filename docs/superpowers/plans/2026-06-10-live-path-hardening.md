@@ -421,7 +421,17 @@ async def test_last_market_by_contract_distinguishes_legs(subscriber_env):
 
 async def test_tick_routing_uses_event_contract(tmp_path, subscriber_env):
     # 同 symbol 的 STK 與 OPT 事件各自寫進自己的分區（不靠 register_contract）
-    ...  # 斷言 OPT 事件寫入 sec_type=OPT 分區、STK 寫入 sec_type=STK 分區
+    bus, subscriber = subscriber_env
+    stk = Contract(symbol="AAPL", sec_type="STK")
+    opt = Contract(symbol="AAPL", sec_type="OPT", expiry="20260119",
+                   strike=150.0, right="C")
+    await bus.publish(_market_event("AAPL", contract=stk, last=200.0))
+    await bus.publish(_market_event("AAPL", contract=opt, last=5.0))
+    subscriber._tick_writer.close()  # flush
+    stk_dir = tmp_path / "sec_type=STK" / "symbol=AAPL"
+    opt_dir = tmp_path / "sec_type=OPT" / "symbol=AAPL"
+    assert list(stk_dir.rglob("*.parquet"))
+    assert list(opt_dir.rglob("*.parquet"))
 
 
 async def test_on_status_logged(subscriber_env):
@@ -482,9 +492,12 @@ rtk git add packages/storage && rtk git commit -m "feat(storage): order status s
 
 - [ ] **Step 1: 更新測試**
 
-`rtk grep "sim-" packages/backtest/tests apps/trader/tests` 找出所有 `sim-N`
-斷言，改為斷言 `fill.order_id == order_event.order_id` 與
-`fill.strategy_id == order_event.order.strategy_id`。
+`rtk grep "sim-" packages/backtest/tests apps/trader/tests` 找出 `sim-N` 斷言。
+**只改 SimulatedExecutor 輸出的斷言**（test_executor.py、test_assembly.py 中
+經 executor 產生的 fill）→ 改為斷言 `fill.order_id == order_event.order_id`
+與 `fill.strategy_id == order_event.order.strategy_id`。
+**不要動 `test_metrics.py`**——其中的 `sim-` 是手工建構 FillEvent 的任意標籤，
+與 executor 無關（計畫審查發現）。
 
 - [ ] **Step 2: 跑測試確認失敗**
 
@@ -623,6 +636,7 @@ class LiveGateway:
         self._ib = ib
         self._pending_tasks: set[asyncio.Task] = set()
         self._status_memo: dict[str, tuple[str, int]] = {}
+        self._live_orders: dict[str, tuple] = {}  # order_id → (trade, on_status, on_fill)
 
     async def on_order(self, event: OrderEvent) -> None:
         order = event.order
@@ -643,15 +657,26 @@ class LiveGateway:
         broker_id = str(trade.orderStatus.orderId)
         logger.info("Placed order %s (broker %s) for %s",
                     event.order_id, broker_id, order.strategy_id)
+        # 先預埋 memo 再發布：IB 隨後的 statusEvent("Submitted", filled=0)
+        # 走 _on_status 時會被去重，不會發第二次 SUBMITTED（計畫審查發現）。
+        self._status_memo[event.order_id] = ("SUBMITTED", 0)
         await self._publish_status(
             event.order_id, "SUBMITTED", broker_order_id=broker_id
         )
-        trade.statusEvent += lambda t: self._spawn(
-            self._on_status(t, event.order_id, broker_id)
-        )
-        trade.fillEvent += lambda t, f: self._spawn(
-            self._on_fill(t, f, event.order_id, order.strategy_id, broker_id)
-        )
+
+        def on_status(t: ibi.Trade) -> None:
+            self._spawn(self._on_status(t, event.order_id, broker_id))
+
+        def on_fill(t: ibi.Trade, f: ibi.Fill) -> None:
+            self._spawn(
+                self._on_fill(t, f, event.order_id, order.strategy_id, broker_id)
+            )
+
+        trade.statusEvent += on_status
+        trade.fillEvent += on_fill
+        # 保存 handler 引用供終態清理（IB 長期持有 Trade，未斷開會在
+        # shutdown 後收到 late callback；計畫審查發現）。
+        self._live_orders[event.order_id] = (trade, on_status, on_fill)
 
     def _spawn(self, coro) -> None:
         task = asyncio.ensure_future(coro)
@@ -681,6 +706,17 @@ class LiveGateway:
             order_id, status, broker_order_id=broker_id,
             filled_quantity=filled, remaining_quantity=remaining, reason=reason,
         )
+        if status in ("FILLED", "CANCELLED", "REJECTED"):
+            self._cleanup_order(order_id)
+
+    def _cleanup_order(self, order_id: str) -> None:
+        # 終態清理：防 memo 洩漏 + 斷開 eventkit handler 防 late callback
+        self._status_memo.pop(order_id, None)
+        entry = self._live_orders.pop(order_id, None)
+        if entry is not None:
+            trade, on_status, on_fill = entry
+            trade.statusEvent -= on_status
+            trade.fillEvent -= on_fill
 
     async def _on_fill(
         self, trade: ibi.Trade, fill: ibi.Fill,
@@ -799,7 +835,21 @@ def test_stock_delta_no_multiplier():
 
 def test_greeks_parity_with_composite_single_symbol():
     # 單 symbol 場景：AppRiskState 聚合 == GreeksCalculator.composite
-    ...
+    opt = _opt(150.0, "C")
+    greeks = Greeks(delta=0.5, gamma=0.02, vega=0.1, theta=-0.05)
+    legs = [Leg(contract=opt, quantity=2)]
+    expected = GreeksCalculator.composite(legs, {"AAPL": greeks})
+    state = AppRiskState(
+        clock=_clock(),
+        greeks_lookup={
+            contract_key(opt): _mkt("AAPL", contract=opt, model_greeks=greeks)
+        }.get,
+    )
+    state.record_fill(FillEvent("o1", legs, _now(), 0.0, "s1"))
+    actual = state.portfolio_greeks()
+    assert actual.delta == pytest.approx(expected.delta)
+    assert actual.vega == pytest.approx(expected.vega)
+    assert actual.theta == pytest.approx(expected.theta)
 
 
 def test_cashflow_uses_multiplier():
@@ -864,6 +914,9 @@ class AppRiskState:
         self._realized_pnl -= event.commission
 
     def positions(self) -> list[Position]:
+        # 語意變更（有意修正）：max_position_size 現在計算「淨未平倉合約
+        # 部位數」（每個 contract_key 一筆），不再計算歷史成交筆數——
+        # 舊行為連平倉 fill 都累計，是稽核確認的 bug。
         return [
             Position(legs=[leg], strategy_id=self._strategy_by_key.get(key, ""))
             for key, leg in self._net.items()
@@ -1355,14 +1408,56 @@ def test_paper_guard_env_override(monkeypatch):
 `test_assembly.py`：重連迴圈測試——
 
 ```python
-async def test_run_market_data_resubscribes_after_reconnect():
-    # fake data_handler：第一輪 stream 立即結束；
-    # reconnected event 已先 set（sticky 場景）→ 第二輪開始 → 訂閱計數 == 2
-    ...
+class CountingDataHandler:
+    """每次 subscribe_quote 立即結束 stream（模擬斷線後 stream 死亡）。"""
+
+    def __init__(self):
+        self.subscribe_count = 0
+
+    async def subscribe_quote(self, contract):
+        self.subscribe_count += 1
+        return
+        yield  # pragma: no cover — 使函式成為 async generator
 
 
-async def test_run_market_data_exits_on_shutdown():
-    ...
+async def test_run_market_data_resubscribes_after_reconnect(live_app_env):
+    app, handler = live_app_env  # handler 為 CountingDataHandler
+    app._reconnected.set()  # sticky 場景：callback 比 wait 先 fire
+    task = asyncio.create_task(app.run_market_data())
+    await asyncio.sleep(0)  # 第一輪結束 → wait 立即返回（sticky）→ 第二輪
+    await asyncio.sleep(0)
+    app._shutdown = True
+    app._reconnected.set()
+    await asyncio.wait_for(task, timeout=1)
+    assert handler.subscribe_count >= 2
+
+
+async def test_run_market_data_exits_on_shutdown(live_app_env):
+    app, handler = live_app_env
+    task = asyncio.create_task(app.run_market_data())
+    await asyncio.sleep(0)
+    app._shutdown = True
+    app._reconnected.set()
+    await asyncio.wait_for(task, timeout=1)  # 不掛起即通過
+```
+
+`test_cli.py`：task 生命週期——
+
+```python
+async def test_run_live_creates_and_cancels_loop_tasks(monkeypatch):
+    # mock build_live_app 回傳 stub app（connect/run_market_data/
+    # risk_check_loop/watchdog_loop/close 均為記錄呼叫的 stub coroutine），
+    # mock shutdown event 立即 set。
+    calls = []
+    app = _StubLiveApp(calls)
+    monkeypatch.setattr("trading_app.cli.build_live_app", _returns(app))
+    monkeypatch.setattr("trading_app.cli.load_strategy", _noop_strategy)
+    result = cli.main(["live", "--config", str(_paper_config_path)])
+    assert result == 0
+    assert "run_market_data" in calls
+    assert "risk_check_loop" in calls
+    assert "watchdog_loop" in calls
+    assert calls[-1] == "close"  # close 在所有 task 結束之後
 ```
 
 - [ ] **Step 2: 確認失敗** — `uv run pytest apps/trader/tests -v` FAIL。
@@ -1511,15 +1606,31 @@ def _ensure_paper_guard(config: TraderConfig) -> None:
 task 接線：
 
 ```python
-        market_task = asyncio.create_task(app.run_market_data())
-        risk_task = asyncio.create_task(
-            app.risk_check_loop(config.risk.check_interval_seconds)
-        )
-        watchdog_task = asyncio.create_task(app.watchdog_loop())
-        await shutdown.wait()
-        for task in (market_task, risk_task, watchdog_task):
-            task.cancel()
+        tasks = [
+            asyncio.create_task(app.run_market_data()),
+            asyncio.create_task(
+                app.risk_check_loop(config.risk.check_interval_seconds)
+            ),
+            asyncio.create_task(app.watchdog_loop()),
+        ]
+        try:
+            await shutdown.wait()
+        finally:
+            for task in tasks:
+                task.cancel()
+            # 必須 await 被取消的 task 再 close 共享資源（bus/storage/
+            # connection），否則 teardown 期間 task 仍可能寫入（計畫審查發現）
+            await asyncio.gather(*tasks, return_exceptions=True)
 ```
+
+（`_run_live` 整體結構：`try` 內為 strategy 載入 + connect + tasks + wait，
+`finally` 內 `await app.close()` 維持不變——gather 在內層 finally，先於
+close 執行。）
+
+**備註（計畫審查裁決）**：`LiveApp._reconnected` 用 `field(default_factory=
+asyncio.Event)` 安全——Python 3.10+ 已移除 asyncio 原語的建構期 loop 綁定
+（首次 await 才取 running loop），且 `build_live_app` 為 async 函式、必然在
+loop 內執行。Codex 的 cross-loop Critical 主張依此否決。
 
 - [ ] **Step 4: 跑 app 測試 + Commit**
 
