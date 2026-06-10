@@ -1,7 +1,7 @@
 # Live Execution Path Hardening — Design Spec
 
-**日期：** 2026-06-10（rev 2，含 review gate 迭代 1 修訂）
-**狀態：** 待 review gate 迭代 2
+**日期：** 2026-06-10（rev 3，含 review gate 迭代 1+2 修訂）
+**狀態：** 待 review gate 迭代 3（最終）
 **來源：** 2026-06-10 全庫稽核 M0+M1 任務計畫；使用者決策：半自動（告警後人工介入）、風控真值用 IB account、煙霧測試排在本工作之後
 
 ## 1. 問題陳述
@@ -35,7 +35,9 @@ broker orderId 是附屬屬性，僅供對帳。
   UUID，回傳值不變仍為 order_id）；`orders` 表新增 `broker_order_id TEXT`。
   **輕量遷移**：`init()` 在 CREATE 之後以 `PRAGMA table_info(orders)` 檢查，
   缺欄位則 `ALTER TABLE orders ADD COLUMN broker_order_id TEXT`（既有本機 DB
-  自動升級，無需重建）。
+  自動升級，無需重建）。**INSERT 必須同步改為具名欄位形式**
+  （`INSERT INTO orders (id, timestamp, ...) VALUES (...)`）——現行 8 個
+  positional placeholder 在加欄後會直接報錯（review 迭代 2 發現）。
 - `execution/live_gateway.py`：`on_order()` 以 closure 攜帶 `event.order_id` 與
   `event.order.strategy_id` 進 fill/status 回呼；`FillEvent.order_id` = canonical ID。
 - `backtest/executor.py`：`SimulatedExecutor` 的 FillEvent 同樣回填
@@ -62,16 +64,23 @@ class OrderStatusEvent:
 
 - `LiveGateway.on_order()`：placeOrder 後立即發布 `SUBMITTED`（含 broker_order_id）。
 - **狀態映射（單一明確規則，紅燈測試 fixture 必須照此模擬）**：
+  - 映射只在 statusEvent 觸發時評估；**REJECTED/CANCELLED 判定僅適用於終態**
+    （ib_async DoneStates：`Filled`/`Cancelled`/`ApiCancelled`/`Inactive`）。
   - `Filled` → FILLED
-  - `Cancelled` / `ApiCancelled` / `Inactive`：若 `trade.log` 含任何
-    `errorCode` 條目 → **REJECTED**（reason = 該條 message）；否則 → **CANCELLED**。
-    （IB 的 `Inactive` 也可能是暫態如 RTH 外掛單；以 error log 區分拒單與非拒單。）
+  - `Cancelled` / `ApiCancelled` / `Inactive`（終態）：若 `trade.log` 含任何
+    **非零** `errorCode` 條目 → **REJECTED**（reason = 該條 message）；
+    否則 → **CANCELLED**。（`TradeLogEntry.errorCode` 預設為 0，非零才是錯誤；
+    訂單存活期間的警告 log 不觸發判定，因為只在終態評估。）
   - `PendingSubmit` / `PreSubmitted` / `Submitted` → 一律 SUBMITTED（明確收斂）。
-  - handler 以 last-status memo 去重（ib_async 同一狀態可能重複觸發）。
-- **部分成交**：訂閱 `trade.fillEvent`（每筆 execution 觸發）發布**增量** FillEvent，
-  取代現行 `filledEvent`（只在完全成交時觸發、重放全部 fills 會重複計算）。
-  `filled_quantity`/`remaining_quantity` 取自 `trade.orderStatus`，隨 PARTIAL
-  狀態事件發布。
+  - **PARTIAL 不由 statusEvent 產生**（IB 部分成交期間狀態仍是 `Submitted`）——
+    由 fillEvent handler 在 `trade.orderStatus.remaining > 0` 時發布。
+  - 去重 memo 以 `(status, filled_quantity)` 為 key（單純 status 去重會吞掉
+    部分成交進度更新）。
+- **部分成交**：訂閱 `trade.fillEvent` 發布**增量** FillEvent，取代現行
+  `filledEvent`（只在完全成交時觸發、重放全部 fills 會重複計算）。
+  **handler 簽名為 `(trade, fill)`**（ib_async 傳遞兩個參數），只發布**傳入的
+  該筆 fill**，嚴禁迭代 `trade.fills`（會重放）。`filled_quantity`/
+  `remaining_quantity` 取自 `trade.orderStatus`。
 - **Commission 政策（明確限制）**：`commissionReport` 在 ib_async 中於 fillEvent
   之後才到達。增量 FillEvent 的 `commission` = 該 execution 的 commissionReport
   若已存在，否則 0.0。即時 commission 可能低估——可接受，因 live equity 已改用
@@ -95,34 +104,51 @@ class OrderStatusEvent:
 
 - 新模組 `tws_client/account.py`：`AccountState`（並於 package root re-export）——
   `start()` 呼叫 `ib.accountSummaryAsync()` 建立快照並訂閱 `ib.accountSummaryEvent`
-  持續更新。**明確指定 tag 清單**：`NetLiquidation,EquityWithLoanValue,FullMaintMarginReq,Cushion`
-  （預設 tag 子集不含 Cushion，不指定會永遠拿不到）。提供：
+  持續更新。**注意**：`accountSummaryAsync()` 不接受自訂 tag 參數（review 迭代 2
+  查源確認），其底層請求已含完整 tag 集（含 `Cushion`）——實作從回傳的
+  AccountValue 清單按 tag 名讀取，paper smoke test 驗證 Cushion 實際存在。提供：
   - `equity() -> float | None`（NetLiquidation；尚無資料回 None）
   - `margin_cushion() -> float | None`（優先 `Cushion` tag；缺值時以
     (EquityWithLoanValue − FullMaintMarginReq)/EquityWithLoanValue 計算；
-    無資料回 None——monitor 對 None 不檢查，不誤報）
+    無資料回 None）
+- **per-contract 行情身分**（review 迭代 2 Critical：期權 MarketEvent 的 symbol
+  是標的代碼，同標的多腿會塌縮成一筆）：
+  - `core/models.py` 新增 `contract_key(contract) -> str`：STK → `"AAPL"`；
+    OPT → `"AAPL|20260119|150.0|C"`。
+  - `MarketEvent` 末位新增 `contract: Contract | None = None`；行情發布端
+    （converters / HistoricalDataHandler）附掛來源 contract。
+  - `StorageSubscriber` 新增 `last_market_by_contract(key) -> MarketEvent | None`
+    （以 contract_key 索引；既有 symbol 索引的 `last_market` 行為不變）。
 - `AppRiskState` 修正（live 與 backtest 共用）：
-  - 建構子新增 `market_lookup: MarketLookup | None` 注入（接
-    `StorageSubscriber.last_market`，解決 AppRiskState 無行情存取的缺口）。
-  - **部位沖銷**：以 `(con_id, symbol, expiry, strike, right)` 為 key 淨額累計，
-    歸零即移除（取代 append-only list）。`con_id=0`（backtest/STK 未 qualify）
-    **刻意容忍**——key 含 symbol/expiry/strike/right 足以消歧。
-  - **greeks 聚合**：`portfolio_greeks()` = 對每個淨部位 leg 查 `market_lookup`
-    取 `model_greeks`，**委派給 `strategy/greeks_calc.composite()`**——它已內含
-    multiplier 與 STK delta=quantity 語意，**不得**在外層再乘 multiplier
-    （review 發現：外乘會對 STK 重複套用）。無行情的 leg 跳過並記 debug log。
+  - 建構子新增 `greeks_lookup: Callable[[str], MarketEvent | None] | None` 注入
+    （接 `StorageSubscriber.last_market_by_contract`）。
+  - **部位沖銷**：以 `contract_key` 為 key 淨額累計，歸零即移除（取代
+    append-only list）。`con_id` 不參與 key（backtest/STK 的 con_id=0 刻意容忍，
+    contract_key 已足以消歧）。**單一策略假設**：config 僅支援一個 strategy
+    （`TraderConfig.strategy` 為單數），同合約跨策略歸屬問題明文擱置；
+    `Position.strategy_id` 取自 fill 的 `strategy_id`。
+  - **greeks 聚合**：`portfolio_greeks()` = 對每個淨部位以 `greeks_lookup(key)`
+    取 `model_greeks`，依 `GreeksCalculator.composite` 的既有語意逐 leg 聚合
+    （OPT：greeks × qty × multiplier；STK：delta = qty，**不乘 multiplier**），
+    並以 parity 測試對照 `composite` 確保語意一致。無行情的 leg 跳過並記
+    debug log。
   - **multiplier 修正**：現金流計算乘上 `contract.multiplier`（backtest equity
     仍為現金流近似，**已知限制**，live 不使用它）。
   - `min_dte() -> int | None`：未平倉期權部位的 expiry 對 clock.now() 的最小 DTE。
-- **live 接線**（assembly.py）：`equity_provider` → `AccountState.equity`（None
-  時 fallback 0.0 並記 warning）；`on_fill` 與週期檢查傳入 `min_dte` 與
-  `margin_cushion`。backtest 接線維持 AppRiskState。
-- **週期性風控檢查**：LiveApp 新增 `risk_check_loop()` task。**可測試性設計**：
-  檢查邏輯抽為 `RiskPipeline.check_now()` 同步可呼叫方法（呼叫
-  `monitor.check(greeks, equity, min_dte, margin_cushion)` 發布警報、
-  `should_circuit_break()` 為真即觸發熔斷 + AlertEvent）；loop task 僅負責
-  「每 `risk.check_interval_seconds`（預設 30，**需在 RiskConfig 宣告**，
-  extra="forbid"）呼叫一次」。測試直接呼叫 `check_now()`，不依賴真實時間。
+- **live 接線**（assembly.py）：`equity_provider` → `AccountState.equity`。
+  **None 語意（消除迭代 2 發現的矛盾）**：equity 為 None 時**跳過**所有監控
+  檢查（記 debug log），且 `on_signal` 拒絕新訊號（reason="account data
+  unavailable"）——**絕不 fallback 0.0**（會誤觸發回撤熔斷）。backtest 接線
+  維持 AppRiskState。
+- **週期性風控檢查**：檢查邏輯抽為 `RiskPipeline.check_now()`——**async 方法**
+  （需 await `bus.publish`；迭代 2 發現 sync 設計與 async bus 矛盾。
+  pytest-asyncio auto mode 下測試可直接 await，可測試性不受影響）。
+  呼叫 `monitor.check(greeks, equity, min_dte, margin_cushion)` 發布警報、
+  `should_circuit_break()` 為真即觸發熔斷 + AlertEvent。loop task 每
+  `risk.check_interval_seconds`（預設 30.0，`gt=0`，**需在 RiskConfig 宣告**）
+  呼叫一次。**接線要求**：`cli._run_live()` 必須建立 risk_check_loop 與
+  watchdog 兩個 task，並於 shutdown 取消（與 market_task 同模式）；
+  assembly/cli 測試驗證 task 確實建立與取消。
 
 ### 3.4 重連重訂閱 + Watchdog（修 C4；半自動）
 
@@ -146,7 +172,7 @@ class OrderStatusEvent:
 - **Watchdog**：獨立類 `MarketDataWatchdog`（assembly.py 或 core）——
   訂閱 MarketEvent 記錄每 symbol 最後接收時間（**注入 `Clock`**，非直接
   `time.monotonic`，保證可測試）；提供 `check_now() -> list[AlertEvent]`：
-  逾 `tws.stale_data_seconds`（預設 60，**需在 TwsConfig 宣告**）無 tick →
+  逾 `tws.stale_data_seconds`（預設 60.0，`gt=0`，**需在 TwsConfig 宣告**）無 tick →
   AlertEvent（每 symbol 觸發後進入冷卻，恢復收 tick 才重置，避免刷屏）。
   LiveApp loop task 週期呼叫。測試用 SimClock 推進時間 + 直接呼叫 `check_now()`。
 
@@ -172,7 +198,10 @@ class OrderStatusEvent:
    strategy_id（經 FillEvent.strategy_id）。
 3. `packages/storage/tests/test_trade_store.py:35-36` —— 斷言 log_order 自產
    UUID → 改斷言使用 event.order_id。
-4. 既有 `filledEvent` 相關 gateway 測試 → 改為 `fillEvent` 增量語意。
+4. 既有 `filledEvent` 相關 gateway 測試 → 改為 `fillEvent` 增量語意
+   （handler 簽名 `(trade, fill)`）。
+5. backtest/assembly 測試中對 `sim-N` 格式 order_id 的斷言（實作時 grep
+   確認）→ 改為 canonical order_id。
 
 其餘測試不得退化。
 
@@ -180,21 +209,26 @@ class OrderStatusEvent:
 
 全部沿用既有 mock 模式（真 `eventkit.Event` 模擬 ib_async 事件，現有測試已採用）：
 
-1. 拒單：mock `trade.statusEvent` 觸發 `Inactive` + trade.log 含 errorCode 條目
-   → 斷言 OrderStatusEvent(REJECTED, reason=錯誤訊息) + AlertEvent +
-   order_status 表有紀錄。（fixture 必須照 §3.2 映射規則模擬。）
+1. 拒單：mock `trade.statusEvent` 觸發 `Inactive` + trade.log 含**非零**
+   errorCode 條目 → 斷言 OrderStatusEvent(REJECTED, reason=錯誤訊息) +
+   AlertEvent + order_status 表有紀錄；存活期警告（非終態 + 非零 errorCode）
+   不觸發 REJECTED。（fixture 必須照 §3.2 映射規則模擬。）
 2. 取消：`Cancelled` 無 error log → OrderStatusEvent(CANCELLED)。
 3. 部分成交：兩筆 execution 經 `fillEvent` → 兩個增量 FillEvent，數量不重複；
    commission 僅在 report 已附掛的 fixture 中斷言。
 4. ID 一致性：下單→成交後 `query_fills(order_id)` 非空（join 成立）；
    orders.broker_order_id 已回填。
 5. 既有 DB 遷移：以舊 schema 建 orders 表 → `init()` 後 broker_order_id 欄存在。
-6. greeks 非零：期權持倉 + model_greeks 行情 + market_lookup 注入 →
-   `portfolio_greeks().delta != 0`；STK 部位不重複乘 multiplier。
+6. greeks 非零：期權持倉 + model_greeks 行情 + greeks_lookup 注入 →
+   `portfolio_greeks().delta != 0`；STK 部位不重複乘 multiplier；
+   同標的兩腿期權各自取到自己的 greeks（per-contract key 測試）；
+   單一 symbol 場景與 `GreeksCalculator.composite` 結果一致（parity 測試）。
 7. 沖銷：開倉 + 反向平倉 → `positions()` 為空；`min_dte()` 隨之為 None。
 8. AccountState：mock accountSummary 值 → equity/margin_cushion 正確；
-   無資料 → None；monitor 對 None 不產生警報。
-9. 週期檢查：margin_cushion=0.01 → `check_now()` 觸發熔斷 + AlertEvent。
+   無資料 → None；equity None → 監控跳過且新訊號被拒（reason 含
+   "account data unavailable"），無回撤誤報。
+9. 週期檢查：margin_cushion=0.01 → `await check_now()` 觸發熔斷 + AlertEvent；
+   PARTIAL 進度更新不被去重 memo 吞掉（(status, filled_qty) key 測試）。
 10. 重連：模擬 stream 死亡 + reconnected 已先 set（sticky 場景）→ 訂閱重建
     （呼叫次數斷言）；`_on_disconnect` 重入 → 不疊加 reconnect task。
 11. watchdog：SimClock 推進 61s 無 tick → `check_now()` 回傳 AlertEvent；
@@ -227,3 +261,13 @@ Inactive 以 error log 區分拒單（O-M6 + X-2）、commission 滯後政策（
 reconnect running-task guard（X-3）、config 欄位宣告（X-4）、SQLite ALTER 遷移
 （X-5）、AlertEvent value 慣例（X-6）、watchdog/週期檢查注入 Clock 與 check_now
 可測試設計（X-7）、package root re-export（X-8）、con_id=0 容忍聲明（O-M9）。
+
+**迭代 2（opus + codex，2026-06-10）**：opus 10/10 PASS。採納——named-column
+INSERT（O 新發現）、per-contract 行情身分 contract_key + MarketEvent.contract +
+last_market_by_contract（X-C1，取代迭代 1 的 composite 直接委派；改為語意一致的
+leg 聚合 + parity 測試）、check_now 改 async（X-C2）、PARTIAL 由 fillEvent 產生
+且去重 memo 含 filled_quantity（X-I1）、REJECTED 限終態 + 非零 errorCode
+（X-I2）、fillEvent (trade, fill) 簽名（X-I3）、equity None 跳過監控 + 拒新訊號
+取代 0.0 fallback（X-I4）、accountSummaryAsync 無 tag 參數之更正（X-I5，
+與迭代 1 O-I5 相反，採查源結論）、cli 接線要求與測試（X-I6）、單一策略假設
+明文化（X-I7）、timing config gt=0（X-M1）、sim-N order_id grep 注意（O-Minor）。
