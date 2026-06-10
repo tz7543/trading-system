@@ -2,6 +2,8 @@ import logging
 
 import ib_async as ibi
 
+from core.models import MarginInfo
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,6 +25,14 @@ class AccountState:
 
     def equity(self) -> float | None:
         return self._values.get("NetLiquidation")
+
+    def margin_info(self) -> MarginInfo | None:
+        init = self._values.get("FullInitMarginReq")
+        maint = self._values.get("FullMaintMarginReq")
+        ewl = self._values.get("EquityWithLoanValue")
+        if init is None or maint is None or ewl is None:
+            return None
+        return MarginInfo(init_margin=init, maint_margin=maint, equity_with_loan=ewl)
 
     def margin_cushion(self) -> float | None:
         cushion = self._values.get("Cushion")

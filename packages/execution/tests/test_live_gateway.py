@@ -816,3 +816,119 @@ def test_derive_status_unknown_returns_none():
     status, reason = _derive_status("SomeUnknownStatus", 0, trade)
     assert status is None
     assert reason == ""
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: late-fill protection — fillEvent handler must survive terminal status
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_late_fill_after_filled_status_still_published():
+    """statusEvent('Filled') arrives before the final execDetails fillEvent.
+    The FillEvent must still be published with the correct order_id/quantity."""
+    mock_ib = _make_mock_ib()
+    trade = ibi.Trade(
+        contract=ibi.Stock("AAPL", "SMART", "USD"),
+        order=ibi.Order(orderId=42, action="BUY", totalQuantity=100),
+        orderStatus=ibi.OrderStatus(
+            orderId=42,
+            status="Submitted",
+            filled=0,
+            remaining=100,
+            avgFillPrice=0.0,
+        ),
+    )
+    mock_ib.placeOrder.return_value = trade
+    bus = EventBus()
+    clock = LiveClock()
+    fills_received: list[FillEvent] = []
+    statuses_received: list[OrderStatusEvent] = []
+
+    async def cap_fill(e: FillEvent) -> None:
+        fills_received.append(e)
+
+    async def cap_status(e: OrderStatusEvent) -> None:
+        statuses_received.append(e)
+
+    bus.subscribe(FillEvent, cap_fill)
+    bus.subscribe(OrderStatusEvent, cap_status)
+
+    gw = LiveGateway(bus, clock, mock_ib)
+    event = _order_event_single_leg()
+    await gw.on_order(event)
+
+    # Step 1: emit Filled status BEFORE the fill detail arrives
+    trade.orderStatus.status = "Filled"
+    trade.orderStatus.filled = 100
+    trade.orderStatus.remaining = 0
+    trade.statusEvent.emit(trade)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert any(s.status == "FILLED" for s in statuses_received)
+
+    # Step 2: the late execDetails fill arrives AFTER the terminal status
+    fill = ibi.Fill(
+        contract=ibi.Stock("AAPL", "SMART", "USD"),
+        execution=ibi.Execution(shares=100.0, avgPrice=151.0, side="BOT"),
+        commissionReport=ibi.CommissionReport(commission=1.0),
+        time=datetime(2026, 6, 5, 14, 30, tzinfo=UTC),
+    )
+    trade.fillEvent.emit(trade, fill)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    # The late fill must still be published
+    assert len(fills_received) == 1
+    assert fills_received[0].order_id == event.order_id
+    assert fills_received[0].legs_filled[0].quantity == 100
+
+
+@pytest.mark.asyncio
+async def test_status_handler_detached_after_terminal():
+    """After a terminal status (Filled), emitting another statusEvent must
+    produce no new OrderStatusEvent — the handler was detached."""
+    mock_ib = _make_mock_ib()
+    trade = ibi.Trade(
+        contract=ibi.Stock("AAPL", "SMART", "USD"),
+        order=ibi.Order(orderId=42, action="BUY", totalQuantity=100),
+        orderStatus=ibi.OrderStatus(
+            orderId=42,
+            status="Submitted",
+            filled=0,
+            remaining=100,
+            avgFillPrice=0.0,
+        ),
+    )
+    mock_ib.placeOrder.return_value = trade
+    bus = EventBus()
+    clock = LiveClock()
+    statuses_received: list[OrderStatusEvent] = []
+
+    async def cap_status(e: OrderStatusEvent) -> None:
+        statuses_received.append(e)
+
+    bus.subscribe(OrderStatusEvent, cap_status)
+
+    gw = LiveGateway(bus, clock, mock_ib)
+    event = _order_event_single_leg()
+    await gw.on_order(event)
+
+    # Emit terminal Filled status
+    trade.orderStatus.status = "Filled"
+    trade.orderStatus.filled = 100
+    trade.orderStatus.remaining = 0
+    trade.statusEvent.emit(trade)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    count_after_terminal = len(statuses_received)
+    assert any(s.status == "FILLED" for s in statuses_received)
+
+    # Emit another statusEvent — the handler must be detached; no new event
+    trade.statusEvent.emit(trade)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert len(statuses_received) == count_after_terminal

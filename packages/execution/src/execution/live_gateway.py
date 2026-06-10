@@ -103,14 +103,19 @@ class LiveGateway:
             self._cleanup_order(order_id)
 
     def _cleanup_order(self, order_id: str) -> None:
-        # Terminal-state cleanup: avoid memo leaks and detach eventkit
-        # handlers to prevent late callbacks.
+        # Terminal-state cleanup: detach only the statusEvent handler and pop
+        # the memo.  The fillEvent handler is intentionally left attached:
+        # TWS's execDetails (→fillEvent) and orderStatus (→statusEvent) have
+        # no delivery-order guarantee, so a "Filled" status can arrive before
+        # the final execution detail.  The closure keeps order_id/strategy_id
+        # alive; memory cost is one closure per order per session — the same
+        # scale as the non-terminal-order limitation documented above.
         self._status_memo.pop(order_id, None)
         entry = self._live_orders.pop(order_id, None)
         if entry is not None:
-            trade, on_status, on_fill = entry
+            trade, on_status, _on_fill = entry
             trade.statusEvent -= on_status
-            trade.fillEvent -= on_fill
+            # on_fill stays attached to catch late execDetails
 
     async def _on_fill(
         self,

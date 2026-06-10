@@ -25,7 +25,7 @@ from core import (
     SimClock,
     ValidationResult,
 )
-from core.models import Contract, contract_key
+from core.models import Contract, MarginInfo, contract_key
 from execution import LiveGateway
 from market_data.historical import HistoricalDataHandler
 from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
@@ -43,6 +43,7 @@ ProposedGreeksProvider = Callable[[SignalEvent], Greeks]
 PositionsProvider = Callable[[], list[Position]]
 EquityProvider = Callable[[], float | None]
 MarginCushionProvider = Callable[[], float | None]
+MarginInfoProvider = Callable[[], "MarginInfo | None"]
 MinDteProvider = Callable[[], int | None]
 FillRecorder = Callable[[FillEvent], None]
 GreeksLookup = Callable[[str], MarketEvent | None]
@@ -162,6 +163,7 @@ class RiskPipeline:
         positions_provider: PositionsProvider | None = None,
         equity_provider: EquityProvider | None = None,
         margin_cushion_provider: MarginCushionProvider | None = None,
+        margin_info_provider: MarginInfoProvider | None = None,
         min_dte_provider: MinDteProvider | None = None,
         fill_recorder: FillRecorder | None = None,
         approved_by: str = "pre-trade-validator",
@@ -180,6 +182,9 @@ class RiskPipeline:
         self._positions_provider = positions_provider or list
         self._equity_provider = equity_provider or (lambda: None)
         self._margin_cushion_provider = margin_cushion_provider or (lambda: None)
+        self._margin_info_provider: MarginInfoProvider = margin_info_provider or (
+            lambda: None
+        )
         self._min_dte_provider = min_dte_provider or (lambda: None)
         self._fill_recorder = fill_recorder
         self._approved_by = approved_by
@@ -213,6 +218,7 @@ class RiskPipeline:
             portfolio_greeks=self._portfolio_greeks_provider(),
             proposed_greeks=self._proposed_greeks_provider(signal),
             positions=self._positions_provider(),
+            margin_info=self._margin_info_provider(),
         )
         await self._log_decision(signal, result)
 
@@ -486,6 +492,7 @@ async def build_live_app(
         risk_state,
         equity_provider=account_state.equity,
         margin_cushion_provider=account_state.margin_cushion,
+        margin_info_provider=account_state.margin_info,
         min_dte_provider=risk_state.min_dte,
     )
     bus.subscribe(OrderEvent, gateway.on_order)
@@ -558,6 +565,7 @@ def _wire_risk_pipeline(
     risk_state: AppRiskState,
     equity_provider: EquityProvider | None = None,
     margin_cushion_provider: MarginCushionProvider | None = None,
+    margin_info_provider: MarginInfoProvider | None = None,
     min_dte_provider: MinDteProvider | None = None,
 ) -> RiskPipeline:
     circuit_breaker = CircuitBreaker()
@@ -576,6 +584,7 @@ def _wire_risk_pipeline(
         if equity_provider is not None
         else risk_state.equity,
         margin_cushion_provider=margin_cushion_provider or (lambda: None),
+        margin_info_provider=margin_info_provider,
         min_dte_provider=min_dte_provider
         if min_dte_provider is not None
         else risk_state.min_dte,

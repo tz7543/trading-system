@@ -681,6 +681,78 @@ async def test_alert_logger_subscriber(caplog):
 
 
 # ---------------------------------------------------------------------------
+# Fix 2b: RiskPipeline rejects when margin_info_provider over max_margin_utilization
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_risk_pipeline_rejects_signal_when_margin_utilization_exceeded():
+    """margin_info_provider returns init_margin/equity_with_loan > max (0.80).
+    The signal must be rejected (no OrderEvent published)."""
+    from core.models import MarginInfo
+
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    orders_published: list[OrderEvent] = []
+
+    async def capture_order(event: OrderEvent) -> None:
+        orders_published.append(event)
+
+    bus.subscribe(OrderEvent, capture_order)
+
+    # init_margin/equity_with_loan = 90000/100000 = 0.90 > 0.80 limit
+    def margin_provider() -> MarginInfo:
+        return MarginInfo(
+            init_margin=90000.0, maint_margin=80000.0, equity_with_loan=100000.0
+        )
+
+    pipeline = RiskPipeline(
+        bus=bus,
+        validator=PreTradeValidator(_risk_limits()),
+        clock=clock,
+        equity_provider=lambda: 100_000.0,
+        margin_info_provider=margin_provider,
+    )
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    await pipeline.on_signal(_signal(clock, contract))
+
+    assert orders_published == []
+
+
+@pytest.mark.asyncio
+async def test_risk_pipeline_approves_signal_when_margin_within_limit():
+    """margin_info_provider returns utilization < max (0.80). Signal approved."""
+    from core.models import MarginInfo
+
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    orders_published: list[OrderEvent] = []
+
+    async def capture_order(event: OrderEvent) -> None:
+        orders_published.append(event)
+
+    bus.subscribe(OrderEvent, capture_order)
+
+    # init_margin/equity_with_loan = 50000/100000 = 0.50 < 0.80 limit
+    def margin_provider() -> MarginInfo:
+        return MarginInfo(
+            init_margin=50000.0, maint_margin=40000.0, equity_with_loan=100000.0
+        )
+
+    pipeline = RiskPipeline(
+        bus=bus,
+        validator=PreTradeValidator(_risk_limits()),
+        clock=clock,
+        equity_provider=lambda: 100_000.0,
+        margin_info_provider=margin_provider,
+    )
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    await pipeline.on_signal(_signal(clock, contract))
+
+    assert len(orders_published) == 1
+
+
+# ---------------------------------------------------------------------------
 # Task 10: live reconnect loop
 # ---------------------------------------------------------------------------
 
