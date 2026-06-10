@@ -19,6 +19,7 @@ from core import (
     LiveClock,
     MarketEvent,
     OrderEvent,
+    OrderStatusEvent,
     Position,
     SignalEvent,
     SimClock,
@@ -39,7 +40,9 @@ MarketLookup = Callable[[str], MarketEvent | None]
 GreeksProvider = Callable[[], Greeks]
 ProposedGreeksProvider = Callable[[SignalEvent], Greeks]
 PositionsProvider = Callable[[], list[Position]]
-EquityProvider = Callable[[], float]
+EquityProvider = Callable[[], float | None]
+MarginCushionProvider = Callable[[], float | None]
+MinDteProvider = Callable[[], int | None]
 FillRecorder = Callable[[FillEvent], None]
 GreeksLookup = Callable[[str], MarketEvent | None]
 
@@ -148,6 +151,8 @@ class RiskPipeline:
         proposed_greeks_provider: ProposedGreeksProvider | None = None,
         positions_provider: PositionsProvider | None = None,
         equity_provider: EquityProvider | None = None,
+        margin_cushion_provider: MarginCushionProvider | None = None,
+        min_dte_provider: MinDteProvider | None = None,
         fill_recorder: FillRecorder | None = None,
         approved_by: str = "pre-trade-validator",
     ) -> None:
@@ -163,7 +168,9 @@ class RiskPipeline:
             lambda _signal: Greeks()
         )
         self._positions_provider = positions_provider or list
-        self._equity_provider = equity_provider or (lambda: 0.0)
+        self._equity_provider = equity_provider or (lambda: None)
+        self._margin_cushion_provider = margin_cushion_provider or (lambda: None)
+        self._min_dte_provider = min_dte_provider or (lambda: None)
         self._fill_recorder = fill_recorder
         self._approved_by = approved_by
 
@@ -181,6 +188,13 @@ class RiskPipeline:
                     approved=False,
                     reason="Circuit breaker triggered",
                 ),
+            )
+            return
+
+        if self._equity_provider() is None:
+            await self._log_decision(
+                signal,
+                ValidationResult(approved=False, reason="account data unavailable"),
             )
             return
 
@@ -203,22 +217,36 @@ class RiskPipeline:
             )
         )
 
-    async def on_fill(self, event: FillEvent) -> None:
-        if self._fill_recorder:
-            self._fill_recorder(event)
+    async def on_order_status(self, event: OrderStatusEvent) -> None:
+        if event.status in ("REJECTED", "CANCELLED"):
+            await self._bus.publish(
+                AlertEvent(
+                    message=f"Order {event.order_id} {event.status}: {event.reason}",
+                    value=0.0,
+                    timestamp=self._clock.now(),
+                )
+            )
 
+    async def check_now(self) -> None:
         if not self._monitor:
             return
-
-        portfolio_greeks = self._portfolio_greeks_provider()
         equity = self._equity_provider()
-        for alert in self._monitor.check(portfolio_greeks, equity):
+        if equity is None:
+            logger.debug("Equity unavailable; skipping risk check")
+            return
+        greeks = self._portfolio_greeks_provider()
+        min_dte = self._min_dte_provider()
+        cushion = self._margin_cushion_provider()
+        for alert in self._monitor.check(
+            greeks, equity, min_dte=min_dte, margin_cushion=cushion
+        ):
             await self._bus.publish(alert)
-
         if (
             self._circuit_breaker
             and not self._circuit_breaker.is_triggered
-            and self._monitor.should_circuit_break(portfolio_greeks, equity)
+            and self._monitor.should_circuit_break(
+                greeks, equity, min_dte=min_dte, margin_cushion=cushion
+            )
         ):
             self._circuit_breaker.trigger()
             await self._bus.publish(
@@ -229,12 +257,24 @@ class RiskPipeline:
                 )
             )
 
+    async def on_fill(self, event: FillEvent) -> None:
+        if self._fill_recorder:
+            self._fill_recorder(event)
+        await self.check_now()
+
     async def _log_decision(
         self, signal: SignalEvent, result: ValidationResult
     ) -> None:
         market = self._market_lookup(_signal_symbol(signal))
         if self._decision_logger and market:
             await self._decision_logger.log(signal, market, result)
+
+
+def log_alerts(bus: EventBus) -> None:
+    async def _on_alert(event: AlertEvent) -> None:
+        logger.warning("ALERT: %s (value=%s)", event.message, event.value)
+
+    bus.subscribe(AlertEvent, _on_alert)
 
 
 @dataclass
@@ -424,6 +464,9 @@ def _wire_risk_pipeline(
     decision_logger: DecisionLogger,
     market_lookup: MarketLookup,
     risk_state: AppRiskState,
+    equity_provider: EquityProvider | None = None,
+    margin_cushion_provider: MarginCushionProvider | None = None,
+    min_dte_provider: MinDteProvider | None = None,
 ) -> RiskPipeline:
     circuit_breaker = CircuitBreaker()
     pipeline = RiskPipeline(
@@ -437,11 +480,19 @@ def _wire_risk_pipeline(
         portfolio_greeks_provider=risk_state.portfolio_greeks,
         proposed_greeks_provider=risk_state.proposed_greeks,
         positions_provider=risk_state.positions,
-        equity_provider=risk_state.equity,
+        equity_provider=equity_provider
+        if equity_provider is not None
+        else risk_state.equity,
+        margin_cushion_provider=margin_cushion_provider or (lambda: None),
+        min_dte_provider=min_dte_provider
+        if min_dte_provider is not None
+        else risk_state.min_dte,
         fill_recorder=risk_state.record_fill,
     )
     bus.subscribe(SignalEvent, pipeline.on_signal)
     bus.subscribe(FillEvent, pipeline.on_fill)
+    bus.subscribe(OrderStatusEvent, pipeline.on_order_status)
+    log_alerts(bus)
     return pipeline
 
 

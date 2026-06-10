@@ -9,7 +9,14 @@ import pytest
 
 from core.bus import EventBus
 from core.clock import SimClock
-from core.events import AlertEvent, FillEvent, MarketEvent, OrderEvent, SignalEvent
+from core.events import (
+    AlertEvent,
+    FillEvent,
+    MarketEvent,
+    OrderEvent,
+    OrderStatusEvent,
+    SignalEvent,
+)
 from core.models import Contract, Greeks, Leg, Order, RiskLimits, contract_key
 from core.partitions import tick_partition_path
 from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
@@ -21,6 +28,7 @@ from trading_app.assembly import (
     build_backtest_app,
     build_live_app,
     load_strategy,
+    log_alerts,
     publish_market_data,
     subscribe_strategy,
 )
@@ -523,3 +531,128 @@ def _tick(timestamp: datetime, last: float) -> dict:
         "model_iv": None,
         "model_underlying": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 9 helpers
+# ---------------------------------------------------------------------------
+
+
+class _RecordingDecisionLogger:
+    def __init__(self) -> None:
+        self.decisions = []
+
+    async def log(self, signal, market, result) -> None:
+        self.decisions.append(result)
+
+
+def _make_pipeline(
+    bus: EventBus,
+    clock: SimClock,
+    equity_provider=None,
+    margin_cushion_provider=None,
+    decision_logger=None,
+) -> tuple[RiskPipeline, list[AlertEvent]]:
+    alerts: list[AlertEvent] = []
+
+    async def capture_alert(event: AlertEvent) -> None:
+        alerts.append(event)
+
+    bus.subscribe(AlertEvent, capture_alert)
+    circuit_breaker = CircuitBreaker()
+    pipeline = RiskPipeline(
+        bus=bus,
+        validator=PreTradeValidator(_risk_limits()),
+        clock=clock,
+        decision_logger=decision_logger,
+        market_lookup=lambda _symbol: _mkt("AAPL"),
+        monitor=RealTimeMonitor(_risk_limits(), clock),
+        circuit_breaker=circuit_breaker,
+        portfolio_greeks_provider=lambda: Greeks(delta=10.0),
+        equity_provider=equity_provider
+        if equity_provider is not None
+        else (lambda: 100_000.0),
+        margin_cushion_provider=margin_cushion_provider or (lambda: None),
+    )
+    log_alerts(bus)
+    return pipeline, alerts
+
+
+# ---------------------------------------------------------------------------
+# Task 9 tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rejected_status_emits_alert():
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    pipeline, alerts = _make_pipeline(bus, clock)
+    bus.subscribe(OrderStatusEvent, pipeline.on_order_status)
+    await bus.publish(
+        OrderStatusEvent(
+            order_id="o1",
+            status="REJECTED",
+            timestamp=clock.now(),
+            reason="margin",
+        )
+    )
+    assert any("REJECTED" in a.message and "margin" in a.message for a in alerts)
+
+
+@pytest.mark.asyncio
+async def test_check_now_triggers_circuit_break_on_margin():
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    # margin_cushion_provider returns 0.01 → below 0.02 threshold → circuit break
+    pipeline, alerts = _make_pipeline(bus, clock, margin_cushion_provider=lambda: 0.01)
+    await pipeline.check_now()
+    assert pipeline.circuit_breaker.is_triggered
+    assert any("Circuit breaker" in a.message for a in alerts)
+
+
+@pytest.mark.asyncio
+async def test_equity_none_skips_checks_and_rejects_signals():
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    decision_logger = _RecordingDecisionLogger()
+    pipeline, alerts = _make_pipeline(
+        bus, clock, equity_provider=lambda: None, decision_logger=decision_logger
+    )
+    orders_published: list[OrderEvent] = []
+
+    async def capture_order(event: OrderEvent) -> None:
+        orders_published.append(event)
+
+    bus.subscribe(OrderEvent, capture_order)
+
+    # check_now with None equity → no circuit break, no alerts
+    await pipeline.check_now()
+    assert not pipeline.circuit_breaker.is_triggered
+    assert alerts == []
+
+    # on_signal with None equity → order rejected, not published
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    await pipeline.on_signal(_signal(clock, contract))
+    assert orders_published == []
+    assert decision_logger.decisions[-1].approved is False
+    assert "account data unavailable" in decision_logger.decisions[-1].reason
+
+
+@pytest.mark.asyncio
+async def test_alert_logger_subscriber(caplog):
+    import logging
+
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+
+    log_alerts(bus)
+    with caplog.at_level(logging.WARNING, logger="trading_app.assembly"):
+        await bus.publish(
+            AlertEvent(
+                message="test-alert-msg",
+                value=42.0,
+                timestamp=clock.now(),
+            )
+        )
+    assert any("test-alert-msg" in r.message for r in caplog.records)
