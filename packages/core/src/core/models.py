@@ -112,6 +112,12 @@ class Order:
     is_credit: bool | None = None
 
 
+def contract_key(contract: Contract) -> str:
+    if contract.sec_type == "STK":
+        return contract.symbol
+    return f"{contract.symbol}|{contract.expiry}|{contract.strike}|{contract.right}"
+
+
 def assignment_stock_quantity(
     assigned_contract: Contract,
     contracts_assigned: int,

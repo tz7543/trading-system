@@ -10,6 +10,7 @@ from core.models import (
     Position,
     RiskLimits,
     ValidationResult,
+    contract_key,
 )
 
 
@@ -135,3 +136,25 @@ def test_order_with_all_fields():
     )
     assert order.order_type == "MKT"
     assert order.time_in_force == "GTC"
+
+
+def test_contract_key_stock():
+    c = Contract(symbol="AAPL", sec_type="STK")
+    assert contract_key(c) == "AAPL"
+
+
+def test_contract_key_option():
+    c = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260119", strike=150.0, right="C"
+    )
+    assert contract_key(c) == "AAPL|20260119|150.0|C"
+
+
+def test_contract_key_distinguishes_legs():
+    call = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260119", strike=150.0, right="C"
+    )
+    put = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260119", strike=150.0, right="P"
+    )
+    assert contract_key(call) != contract_key(put)

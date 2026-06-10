@@ -7,6 +7,7 @@ from core.events import (
     FillEvent,
     MarketEvent,
     OrderEvent,
+    OrderStatusEvent,
     SignalEvent,
 )
 from core.models import (
@@ -20,6 +21,7 @@ from core.models import (
     RiskLimits,
     ValidationResult,
     assignment_stock_quantity,
+    contract_key,
 )
 from core.partitions import tick_contract_dir, tick_partition_path
 
@@ -39,12 +41,14 @@ __all__ = [
     "OptionChain",
     "Order",
     "OrderEvent",
+    "OrderStatusEvent",
     "Position",
     "RiskLimits",
     "SignalEvent",
     "SimClock",
     "ValidationResult",
     "assignment_stock_quantity",
+    "contract_key",
     "tick_contract_dir",
     "tick_partition_path",
 ]
