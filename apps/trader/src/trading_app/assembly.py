@@ -3,7 +3,7 @@ import importlib
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import ib_async as ibi
@@ -15,6 +15,7 @@ from core import (
     EventBus,
     FillEvent,
     Greeks,
+    Leg,
     LiveClock,
     MarketEvent,
     OrderEvent,
@@ -23,7 +24,7 @@ from core import (
     SimClock,
     ValidationResult,
 )
-from core.models import Contract
+from core.models import Contract, contract_key
 from execution import LiveGateway
 from market_data.historical import HistoricalDataHandler
 from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
@@ -40,40 +41,82 @@ ProposedGreeksProvider = Callable[[SignalEvent], Greeks]
 PositionsProvider = Callable[[], list[Position]]
 EquityProvider = Callable[[], float]
 FillRecorder = Callable[[FillEvent], None]
+GreeksLookup = Callable[[str], MarketEvent | None]
 
 
 class AppRiskState:
-    def __init__(self, initial_equity: float = 0.0) -> None:
+    def __init__(
+        self,
+        initial_equity: float = 0.0,
+        clock: LiveClock | SimClock | None = None,
+        greeks_lookup: GreeksLookup | None = None,
+    ) -> None:
         self._initial_equity = initial_equity
-        self._positions: list[Position] = []
+        self._clock = clock or LiveClock()
+        self._greeks_lookup = greeks_lookup or (lambda _key: None)
+        self._net: dict[str, Leg] = {}
+        self._strategy_by_key: dict[str, str] = {}
         self._realized_pnl: float = 0.0
 
     def record_fill(self, event: FillEvent) -> None:
-        if not event.legs_filled:
-            return
         for leg in event.legs_filled:
-            if leg.quantity < 0 and leg.entry_price:
-                self._realized_pnl += abs(leg.quantity) * leg.entry_price
-            elif leg.quantity > 0 and leg.entry_price:
-                self._realized_pnl -= abs(leg.quantity) * leg.entry_price
+            mult = leg.contract.multiplier if leg.contract.sec_type == "OPT" else 1
+            if leg.entry_price:
+                self._realized_pnl -= leg.quantity * leg.entry_price * mult
+            key = contract_key(leg.contract)
+            existing = self._net.get(key)
+            new_qty = (existing.quantity if existing else 0) + leg.quantity
+            if new_qty == 0:
+                self._net.pop(key, None)
+                self._strategy_by_key.pop(key, None)
+            else:
+                self._net[key] = Leg(
+                    contract=leg.contract,
+                    quantity=new_qty,
+                    entry_price=leg.entry_price,
+                )
+                self._strategy_by_key[key] = event.strategy_id
         self._realized_pnl -= event.commission
-        self._positions.append(
-            Position(legs=event.legs_filled, strategy_id=event.order_id)
-        )
 
     def positions(self) -> list[Position]:
-        return list(self._positions)
+        # Semantic change (intentional fix): max_position_size now counts net open
+        # contract positions (one per contract_key), not historical fill count —
+        # the old behavior accumulated even closing fills, which was an audited bug.
+        return [
+            Position(legs=[leg], strategy_id=self._strategy_by_key.get(key, ""))
+            for key, leg in self._net.items()
+        ]
 
     def portfolio_greeks(self) -> Greeks:
         total = Greeks()
-        for position in self._positions:
-            if not position.greeks:
+        for key, leg in self._net.items():
+            if leg.contract.sec_type == "STK":
+                total = total + Greeks(delta=leg.quantity)
                 continue
-            total.delta += position.greeks.delta
-            total.gamma += position.greeks.gamma
-            total.vega += position.greeks.vega
-            total.theta += position.greeks.theta
+            market = self._greeks_lookup(key)
+            greeks = market.model_greeks if market else None
+            if greeks is None:
+                logger.debug("No greeks for %s; skipping", key)
+                continue
+            total = total + greeks * (leg.quantity * leg.contract.multiplier)
         return total
+
+    def min_dte(self) -> int | None:
+        dtes = [
+            (
+                datetime.strptime(leg.contract.expiry, "%Y%m%d")
+                .replace(tzinfo=UTC)
+                .date()
+                - self._clock.now().date()
+            ).days
+            for leg in self._net.values()
+            if leg.contract.sec_type == "OPT" and leg.contract.expiry
+        ]
+        return min(dtes) if dtes else None
+
+    def equity(self) -> float:
+        # backtest cash-flow approximation (known limitation); live path should use AccountState
+        return self._initial_equity + self._realized_pnl
 
     def proposed_greeks(self, signal: SignalEvent) -> Greeks:
         raw = signal.context.get("proposed_greeks")
@@ -89,9 +132,6 @@ class AppRiskState:
                 underlying_price=float(raw.get("underlying_price", 0.0)),
             )
         return Greeks()
-
-    def equity(self) -> float:
-        return self._initial_equity + self._realized_pnl
 
 
 class RiskPipeline:
@@ -263,7 +303,7 @@ async def build_backtest_app(
         bus, config.storage, contracts
     )
     decision_logger = _build_decision_logger(config.storage.decision_db)
-    risk_state = AppRiskState(initial_equity=config.risk.initial_equity)
+    risk_state = AppRiskState(initial_equity=config.risk.initial_equity, clock=clock)
     risk_pipeline = _wire_risk_pipeline(
         bus,
         clock,
@@ -309,7 +349,7 @@ async def build_live_app(
         bus, config.storage, contracts
     )
     decision_logger = _build_decision_logger(config.storage.decision_db)
-    risk_state = AppRiskState(initial_equity=config.risk.initial_equity)
+    risk_state = AppRiskState(initial_equity=config.risk.initial_equity, clock=clock)
     risk_pipeline = _wire_risk_pipeline(
         bus,
         clock,

@@ -10,10 +10,10 @@ import pytest
 from core.bus import EventBus
 from core.clock import SimClock
 from core.events import AlertEvent, FillEvent, MarketEvent, OrderEvent, SignalEvent
-from core.models import Contract, Greeks, Leg, Order, RiskLimits
+from core.models import Contract, Greeks, Leg, Order, RiskLimits, contract_key
 from core.partitions import tick_partition_path
 from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
-from strategy import DeltaHedgeStrategy
+from strategy import DeltaHedgeStrategy, GreeksCalculator
 from strategy.base import BaseStrategy
 from trading_app.assembly import (
     AppRiskState,
@@ -354,10 +354,115 @@ def test_app_risk_state_tracks_filled_positions_and_signal_greeks():
         context={"proposed_greeks": {"delta": 25.0, "vega": 3.0}},
     )
 
-    assert state.positions()[0].strategy_id == "sim-1"
+    # strategy_id is now taken from FillEvent.strategy_id (was order_id in old code)
+    assert state.positions()[0].strategy_id == ""
     assert state.equity() == 100000.0 - 100 * 105.0 - 1.0
     assert state.proposed_greeks(signal).delta == 25.0
     assert state.proposed_greeks(signal).vega == 3.0
+
+
+# ---------------------------------------------------------------------------
+# Task 6 helpers
+# ---------------------------------------------------------------------------
+
+
+def _opt(strike, right) -> Contract:
+    return Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20991231", strike=strike, right=right
+    )
+
+
+def _clock() -> SimClock:
+    return SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+
+
+def _now() -> datetime:
+    return datetime(2026, 6, 10, tzinfo=UTC)
+
+
+def _mkt(
+    symbol: str, *, contract: Contract | None = None, model_greeks: Greeks | None = None
+) -> MarketEvent:
+    return MarketEvent(
+        symbol=symbol,
+        timestamp=_now(),
+        bid=1.0,
+        ask=2.0,
+        last=1.5,
+        volume=10,
+        contract=contract,
+        model_greeks=model_greeks,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 6 tests
+# ---------------------------------------------------------------------------
+
+
+def test_netting_open_close_removes_position():
+    state = AppRiskState(clock=SimClock(datetime(2026, 6, 10, tzinfo=UTC)))
+    leg = Leg(contract=_opt(150.0, "C"), quantity=-1, entry_price=2.0)
+    state.record_fill(FillEvent("o1", [leg], datetime.now(UTC), 1.0, "s1"))
+    closing = Leg(contract=_opt(150.0, "C"), quantity=1, entry_price=1.0)
+    state.record_fill(FillEvent("o2", [closing], datetime.now(UTC), 1.0, "s1"))
+    assert state.positions() == []
+    assert state.min_dte() is None
+
+
+def test_portfolio_greeks_per_contract_lookup():
+    call, put = _opt(150.0, "C"), _opt(140.0, "P")
+    events = {
+        contract_key(call): _mkt("AAPL", contract=call, model_greeks=Greeks(delta=0.5)),
+        contract_key(put): _mkt("AAPL", contract=put, model_greeks=Greeks(delta=-0.3)),
+    }
+    state = AppRiskState(clock=_clock(), greeks_lookup=events.get)
+    state.record_fill(FillEvent("o1", [Leg(call, 1)], _now(), 0.0, "s1"))
+    state.record_fill(FillEvent("o2", [Leg(put, 2)], _now(), 0.0, "s1"))
+    g = state.portfolio_greeks()
+    assert g.delta == pytest.approx(0.5 * 100 + (-0.3) * 2 * 100)
+
+
+def test_stock_delta_no_multiplier():
+    stk = Contract(symbol="AAPL", sec_type="STK")
+    state = AppRiskState(clock=_clock(), greeks_lookup=lambda k: None)
+    state.record_fill(FillEvent("o1", [Leg(stk, 100)], _now(), 0.0, "s1"))
+    assert state.portfolio_greeks().delta == pytest.approx(100)
+
+
+def test_greeks_parity_with_composite_single_symbol():
+    # Single symbol scenario: AppRiskState aggregation == GreeksCalculator.composite
+    opt = _opt(150.0, "C")
+    greeks = Greeks(delta=0.5, gamma=0.02, vega=0.1, theta=-0.05)
+    legs = [Leg(contract=opt, quantity=2)]
+    expected = GreeksCalculator.composite(legs, {"AAPL": greeks})
+    state = AppRiskState(
+        clock=_clock(),
+        greeks_lookup={
+            contract_key(opt): _mkt("AAPL", contract=opt, model_greeks=greeks)
+        }.get,
+    )
+    state.record_fill(FillEvent("o1", legs, _now(), 0.0, "s1"))
+    actual = state.portfolio_greeks()
+    assert actual.delta == pytest.approx(expected.delta)
+    assert actual.vega == pytest.approx(expected.vega)
+    assert actual.theta == pytest.approx(expected.theta)
+
+
+def test_cashflow_uses_multiplier():
+    state = AppRiskState(initial_equity=10_000.0, clock=_clock())
+    leg = Leg(contract=_opt(150.0, "C"), quantity=-1, entry_price=2.0)
+    state.record_fill(FillEvent("o1", [leg], _now(), 1.0, "s1"))
+    assert state.equity() == pytest.approx(10_000.0 + 2.0 * 100 - 1.0)
+
+
+def test_min_dte():
+    state = AppRiskState(clock=SimClock(datetime(2026, 6, 10, tzinfo=UTC)))
+    near = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260620", strike=150.0, right="C"
+    )
+    state.record_fill(FillEvent("o1", [Leg(near, -1)], _now(), 0.0, "s1"))
+    assert state.min_dte() == 10
 
 
 class _FakeDataHandler:
