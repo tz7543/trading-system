@@ -365,6 +365,8 @@ class LiveApp:
             if self._shutdown:
                 return
             await self._reconnected.wait()  # sticky: may already be set
+            if self._shutdown:
+                return
             self._reconnected.clear()
             await self.bus.publish(
                 AlertEvent(
