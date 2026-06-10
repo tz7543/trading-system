@@ -483,6 +483,19 @@ def test_min_dte():
     assert state.min_dte() == 10
 
 
+def test_min_dte_skips_malformed_expiry():
+    state = AppRiskState(clock=SimClock(datetime(2026, 6, 10, tzinfo=UTC)))
+    bad = Contract(symbol="AAPL", sec_type="OPT", expiry="BAD", strike=150.0, right="C")
+    state.record_fill(FillEvent("o1", [Leg(bad, -1)], _now(), 0.0, "s1"))
+    assert state.min_dte() is None
+
+    near = Contract(
+        symbol="AAPL", sec_type="OPT", expiry="20260620", strike=155.0, right="C"
+    )
+    state.record_fill(FillEvent("o2", [Leg(near, -1)], _now(), 0.0, "s1"))
+    assert state.min_dte() == 10  # malformed leg skipped, valid leg counted
+
+
 class _FakeDataHandler:
     def __init__(self, events: list[MarketEvent]) -> None:
         self._events = events
@@ -729,3 +742,40 @@ async def test_run_market_data_exits_on_shutdown(live_app_env):
     app._shutdown = True
     app._reconnected.set()
     await asyncio.wait_for(task, timeout=1)  # passes if it does not hang
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: greeks_lookup wiring (spec §3.3 — shared by both paths)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_live_app_wires_greeks_lookup_to_storage_subscriber(live_app_env):
+    app, _handler = live_app_env
+    assert (
+        app.risk_state._greeks_lookup == app.storage_subscriber.last_market_by_contract
+    )
+
+
+@pytest.mark.asyncio
+async def test_backtest_app_wires_greeks_lookup_to_storage_subscriber(tmp_path):
+    config = TraderConfig(
+        backtest=BacktestConfig(ticks_dir=tmp_path / "input_ticks"),
+        storage=StorageConfig(
+            ticks_dir=tmp_path / "ticks",
+            decision_db=tmp_path / "decisions.duckdb",
+            trade_db=tmp_path / "orders.db",
+        ),
+    )
+    app = await build_backtest_app(
+        config,
+        contracts=[Contract(symbol="AAPL", sec_type="STK")],
+        start=datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    try:
+        assert (
+            app.risk_state._greeks_lookup
+            == app.storage_subscriber.last_market_by_contract
+        )
+    finally:
+        await app.close()

@@ -74,6 +74,7 @@ class AppRiskState:
                 self._net.pop(key, None)
                 self._strategy_by_key.pop(key, None)
             else:
+                # entry_price on the netted Leg is last-fill price, not cost basis
                 self._net[key] = Leg(
                     contract=leg.contract,
                     quantity=new_qty,
@@ -106,16 +107,24 @@ class AppRiskState:
         return total
 
     def min_dte(self) -> int | None:
-        dtes = [
-            (
-                datetime.strptime(leg.contract.expiry, "%Y%m%d")
-                .replace(tzinfo=UTC)
-                .date()
-                - self._clock.now().date()
-            ).days
-            for leg in self._net.values()
-            if leg.contract.sec_type == "OPT" and leg.contract.expiry
-        ]
+        dtes = []
+        for leg in self._net.values():
+            if leg.contract.sec_type != "OPT" or not leg.contract.expiry:
+                continue
+            try:
+                expiry_date = (
+                    datetime.strptime(leg.contract.expiry, "%Y%m%d")
+                    .replace(tzinfo=UTC)
+                    .date()
+                )
+            except ValueError:
+                logger.warning(
+                    "Malformed expiry %r on %s; skipping leg in min_dte",
+                    leg.contract.expiry,
+                    leg.contract.symbol,
+                )
+                continue
+            dtes.append((expiry_date - self._clock.now().date()).days)
         return min(dtes) if dtes else None
 
     def equity(self) -> float:
@@ -229,6 +238,9 @@ class RiskPipeline:
             )
 
     async def check_now(self) -> None:
+        # NOTE: RealTimeMonitor is stateless — alerts repeat on each call while a
+        # condition persists (per-fill + periodic); future alert sinks need their
+        # own dedup.
         if not self._monitor:
             return
         equity = self._equity_provider()
@@ -378,7 +390,11 @@ async def build_backtest_app(
         bus, config.storage, contracts
     )
     decision_logger = _build_decision_logger(config.storage.decision_db)
-    risk_state = AppRiskState(initial_equity=config.risk.initial_equity, clock=clock)
+    risk_state = AppRiskState(
+        initial_equity=config.risk.initial_equity,
+        clock=clock,
+        greeks_lookup=storage_subscriber.last_market_by_contract,
+    )
     risk_pipeline = _wire_risk_pipeline(
         bus,
         clock,
