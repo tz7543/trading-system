@@ -117,3 +117,40 @@ def test_empty_fills():
     assert result.win_rate == 0.0
     assert result.profit_factor == 0.0
     assert result.realized_max_drawdown == 0.0
+
+
+def test_pnl_fsum_precision():
+    # Build many small fractional PnL values that expose IEEE-754 drift with sum().
+    # Each round-trip: buy 1 @ 0.1, sell 1 @ 0.2  → pnl = +0.1
+    # 100 such trades: expected total_pnl = 10.0 exactly via fsum.
+    # With naive sum() the accumulated rounding error on 0.1 * 100 is non-zero.
+    fills = []
+    for i in range(100):
+        oid_buy = f"b-{i}"
+        oid_sell = f"s-{i}"
+        fills.append(
+            _stk_fill(
+                f"SYM{i}",
+                10,
+                0.10,
+                0.0,
+                oid_buy,
+                datetime(2026, 6, 4, 14, 30, tzinfo=UTC),
+            )
+        )
+        fills.append(
+            _stk_fill(
+                f"SYM{i}",
+                -10,
+                0.20,
+                0.0,
+                oid_sell,
+                datetime(2026, 6, 4, 14, 31, tzinfo=UTC),
+            )
+        )
+    result = compute_metrics(fills, initial_equity=100000.0)
+    # Each trade pnl = (0.20 - 0.10) * 10 = 1.0; 100 trades = 100.0 total_pnl
+    assert result.total_pnl == pytest.approx(100.0)
+    assert result.net_pnl == pytest.approx(100.0)
+    # Additionally verify commission fsum: all zero here, so 0.0
+    assert result.total_commission == pytest.approx(0.0)

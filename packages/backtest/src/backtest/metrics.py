@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from math import inf
+from math import fsum, inf
 
 from core.events import FillEvent
 from core.models import Contract
@@ -35,15 +35,15 @@ def compute_metrics(
         return BacktestResult()
 
     trades = _match_trades(fills)
-    total_commission = sum(f.commission for f in fills)
-    total_pnl = sum(t.pnl for t in trades)
+    total_commission = fsum(f.commission for f in fills)
+    total_pnl = fsum(t.pnl for t in trades)
     net_pnl = total_pnl - total_commission
 
     winners = [t for t in trades if t.pnl > 0]
     losers = [t for t in trades if t.pnl < 0]
     win_rate = len(winners) / len(trades) if trades else 0.0
-    gross_profit = sum(t.pnl for t in winners)
-    gross_loss = abs(sum(t.pnl for t in losers))
+    gross_profit = fsum(t.pnl for t in winners)
+    gross_loss = abs(fsum(t.pnl for t in losers))
     profit_factor = (
         gross_profit / gross_loss
         if gross_loss > 0
