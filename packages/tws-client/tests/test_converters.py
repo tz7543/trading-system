@@ -93,3 +93,39 @@ def test_ticker_event_carries_contract():
     ticker.modelGreeks = None
     event = ticker_to_market_event(ticker, "AAPL", contract=contract)
     assert event.contract is contract
+
+
+def test_ticker_missing_timestamp_logs_warning(caplog):
+    import logging
+
+    ticker = ibi.Ticker()
+    ticker.contract = ibi.Stock("AAPL", "SMART", "USD")
+    ticker.bid = 150.0
+    ticker.ask = 150.1
+    ticker.last = 150.0
+    ticker.volume = 1000
+    ticker.time = None
+    ticker.modelGreeks = None
+    with caplog.at_level(logging.WARNING, logger="tws_client.converters"):
+        event = ticker_to_market_event(ticker, "AAPL")
+    assert any("missing" in r.message.lower() for r in caplog.records), (
+        "Expected a warning about missing timestamp, got: " + repr(caplog.records)
+    )
+    # Fallback behaviour must still produce a valid timestamp
+    assert event.timestamp is not None
+
+
+def test_ticker_present_timestamp_no_warning(caplog):
+    import logging
+
+    ticker = ibi.Ticker()
+    ticker.contract = ibi.Stock("AAPL", "SMART", "USD")
+    ticker.bid = 150.0
+    ticker.ask = 150.1
+    ticker.last = 150.0
+    ticker.volume = 1000
+    ticker.time = datetime(2026, 6, 5, 14, 30, tzinfo=UTC)
+    ticker.modelGreeks = None
+    with caplog.at_level(logging.WARNING, logger="tws_client.converters"):
+        ticker_to_market_event(ticker, "AAPL")
+    assert not caplog.records, "No warning expected when timestamp is present"

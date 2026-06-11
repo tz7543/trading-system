@@ -1,3 +1,4 @@
+import logging
 import math
 from datetime import UTC, datetime
 
@@ -5,6 +6,8 @@ import ib_async as ibi
 
 from core.events import MarketEvent
 from core.models import Bar, Contract, Greeks
+
+logger = logging.getLogger(__name__)
 
 
 def to_ib_contract(contract: Contract) -> ibi.Contract:
@@ -36,9 +39,16 @@ def ticker_to_market_event(
             implied_vol=_safe(mg.impliedVol),
             underlying_price=_safe(mg.undPrice),
         )
+    if ticker.time:
+        timestamp = ticker.time
+    else:
+        logger.warning(
+            "Ticker %s has missing timestamp, using fallback datetime.now(UTC)", symbol
+        )
+        timestamp = datetime.now(UTC)
     return MarketEvent(
         symbol=symbol,
-        timestamp=ticker.time if ticker.time else datetime.now(UTC),
+        timestamp=timestamp,
         bid=_safe(ticker.bid),
         ask=_safe(ticker.ask),
         last=_safe(ticker.last),
