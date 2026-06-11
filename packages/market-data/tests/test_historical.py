@@ -7,6 +7,7 @@ import pytest
 from core.events import MarketEvent
 from core.models import Contract, Greeks
 from core.partitions import tick_partition_path
+from market_data.exceptions import DataMissingError
 from market_data.historical import TICK_SCHEMA, HistoricalDataHandler
 
 
@@ -187,7 +188,7 @@ async def test_integration_tick_writer_to_historical_handler(tmp_path):
     )
     writer.write(stk_event, contract)
     writer.write(opt_event, opt_contract)
-    writer.close()
+    await writer.close()
 
     handler = HistoricalDataHandler(tmp_path)
 
@@ -204,10 +205,11 @@ async def test_integration_tick_writer_to_historical_handler(tmp_path):
 
 @pytest.mark.asyncio
 async def test_fetch_history_empty(tmp_path):
+    """Missing contract dir now raises DataMissingError instead of returning []."""
     handler = HistoricalDataHandler(tmp_path)
     contract = Contract(symbol="MSFT", sec_type="STK")
-    bars = await handler.fetch_history(contract, "1 D", "1 day")
-    assert bars == []
+    with pytest.raises(DataMissingError):
+        await handler.fetch_history(contract, "1 D", "1 day")
 
 
 @pytest.mark.asyncio
@@ -223,3 +225,72 @@ async def test_subscribe_quote_events_carry_contract(tmp_path):
     events = [e async for e in handler.subscribe_quote(contract)]
     assert len(events) == 1
     assert events[0].contract == contract
+
+
+# --- M6 fail-fast tests ---
+
+
+@pytest.mark.asyncio
+async def test_subscribe_quote_fails_when_contract_dir_missing(tmp_path):
+    """Entire contract directory absent → DataMissingError with symbol and path in message."""
+    handler = HistoricalDataHandler(tmp_path)
+    contract = Contract(symbol="MSFT", sec_type="STK")
+
+    with pytest.raises(DataMissingError) as exc_info:
+        async for _ in handler.subscribe_quote(contract):
+            pass
+
+    msg = str(exc_info.value)
+    assert "MSFT" in msg
+    assert "sec_type=STK" in msg
+    assert "symbol=MSFT" in msg
+
+
+@pytest.mark.asyncio
+async def test_subscribe_quote_fails_for_option_contract_dir_missing(tmp_path):
+    """Option contract directory absent → DataMissingError message contains option fields."""
+    handler = HistoricalDataHandler(tmp_path)
+    contract = Contract(
+        symbol="AAPL260620C00150000",
+        sec_type="OPT",
+        expiry="20260620",
+        strike=150.0,
+        right="C",
+    )
+
+    with pytest.raises(DataMissingError) as exc_info:
+        async for _ in handler.subscribe_quote(contract):
+            pass
+
+    msg = str(exc_info.value)
+    assert "AAPL260620C00150000" in msg
+    assert "sec_type=OPT" in msg
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_propagates_data_missing_error(tmp_path):
+    """fetch_history raises DataMissingError (not returns []) when contract dir is absent."""
+    handler = HistoricalDataHandler(tmp_path)
+    contract = Contract(symbol="NVDA", sec_type="STK")
+
+    with pytest.raises(DataMissingError):
+        await handler.fetch_history(contract, "1 D", "1 day")
+
+
+@pytest.mark.asyncio
+async def test_subscribe_quote_allows_existing_dir_with_no_dates(tmp_path):
+    """contract_dir exists but has no date= subdirs → empty iterator, no exception.
+
+    Sparse/partial gaps within an existing contract tree are a normal scenario
+    (e.g. holiday, partial ingest run).  Fail-fast applies only to a completely
+    absent contract directory.
+    """
+    from core.partitions import tick_contract_dir
+
+    contract = Contract(symbol="SPARSE", sec_type="STK")
+    contract_dir = tick_contract_dir(tmp_path, contract)
+    contract_dir.mkdir(parents=True, exist_ok=True)
+
+    handler = HistoricalDataHandler(tmp_path)
+    events = [e async for e in handler.subscribe_quote(contract)]
+    assert events == []

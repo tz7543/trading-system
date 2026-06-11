@@ -8,6 +8,7 @@ from core.data_handler import DataHandler
 from core.events import MarketEvent
 from core.models import Bar, Contract, Greeks
 from core.partitions import tick_contract_dir, tick_partition_path
+from market_data.exceptions import DataMissingError
 
 TICK_SCHEMA = pa.schema(
     [
@@ -34,7 +35,10 @@ class HistoricalDataHandler(DataHandler):
     async def subscribe_quote(self, contract: Contract) -> AsyncIterator[MarketEvent]:
         contract_dir = tick_contract_dir(self._base_dir, contract)
         if not contract_dir.exists():
-            return
+            raise DataMissingError(
+                f"Historical data completely missing for {contract.symbol!r} "
+                f"({contract.sec_type}); expected directory not found: {contract_dir}"
+            )
         dates = sorted(
             d.name.removeprefix("date=")
             for d in contract_dir.iterdir()
