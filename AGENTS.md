@@ -140,8 +140,8 @@ lint errors that Ruff handles — the hook does it automatically.
 
 ## Caveats
 
-- `README.md` is stale — it describes the old flat layout and pip workflow.
-  Do not reference it for project structure or setup instructions.
+- There is no `README.md` by design — this file (AGENTS.md) is the single
+  source for repository guidance.
 - No CI/CD pipeline — all verification is local (`uv run pytest`,
   `uv run ruff check .`).
 - Refer to `docs/HANDOFF.md` for current project status and next steps.
