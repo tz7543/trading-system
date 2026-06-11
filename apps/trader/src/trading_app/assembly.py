@@ -285,7 +285,7 @@ class RiskPipeline:
         self, signal: SignalEvent, result: ValidationResult
     ) -> None:
         market = self._market_lookup(_signal_symbol(signal))
-        if self._decision_logger and market:
+        if self._decision_logger:
             await self._decision_logger.log(signal, market, result)
 
 

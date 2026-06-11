@@ -662,6 +662,33 @@ async def test_equity_none_skips_checks_and_rejects_signals():
 
 
 @pytest.mark.asyncio
+async def test_decision_logged_even_when_market_snapshot_missing():
+    """H4: RiskPipeline must log the decision even when market_lookup returns None."""
+    bus = EventBus()
+    clock = SimClock(datetime(2026, 6, 10, tzinfo=UTC))
+    decision_logger = _RecordingDecisionLogger()
+    # Override market_lookup to always return None (no market snapshot available)
+    pipeline = RiskPipeline(
+        bus=bus,
+        validator=PreTradeValidator(_risk_limits()),
+        clock=clock,
+        decision_logger=decision_logger,
+        market_lookup=lambda _symbol: None,
+        monitor=RealTimeMonitor(_risk_limits(), clock),
+        circuit_breaker=CircuitBreaker(),
+        portfolio_greeks_provider=lambda: Greeks(delta=10.0),
+        equity_provider=lambda: 100_000.0,
+        margin_cushion_provider=lambda: None,
+    )
+    contract = Contract(symbol="AAPL", sec_type="STK")
+    await pipeline.on_signal(_signal(clock, contract))
+    # Decision must be recorded regardless of missing market data
+    assert len(decision_logger.decisions) == 1, (
+        "Decision must be logged even when market snapshot is unavailable"
+    )
+
+
+@pytest.mark.asyncio
 async def test_alert_logger_subscriber(caplog):
     import logging
 

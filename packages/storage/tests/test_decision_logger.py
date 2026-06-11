@@ -73,3 +73,43 @@ async def test_query_empty(tmp_path):
     rows = await logger.query("SELECT * FROM decisions")
     assert rows == []
     logger.close()
+
+
+# ---------------------------------------------------------------------------
+# H4: decision log must be written even when market snapshot is unavailable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_log_decision_with_missing_market_snapshot(tmp_path):
+    """When market=None, the decision is still written; market columns are NULL."""
+    logger = DecisionLogger(tmp_path / "analytics.duckdb")
+    result = ValidationResult(approved=False, reason="Delta limit exceeded")
+    await logger.log(_make_signal(), None, result)
+    rows = await logger.query("SELECT * FROM decisions")
+    assert len(rows) == 1
+    assert rows[0]["risk_approved"] is False or rows[0]["risk_approved"] == False  # noqa: E712
+    assert rows[0]["risk_reason"] == "Delta limit exceeded"
+    # market-derived columns must be NULL
+    assert rows[0]["bid"] is None
+    assert rows[0]["ask"] is None
+    assert rows[0]["last_price"] is None
+    assert rows[0]["iv"] is None
+    assert rows[0]["delta"] is None
+    assert rows[0]["underlying_price"] is None
+    logger.close()
+
+
+@pytest.mark.asyncio
+async def test_log_decision_with_missing_market_preserves_signal_fields(tmp_path):
+    """Non-market signal fields (strategy_id, direction, reason) are still stored."""
+    logger = DecisionLogger(tmp_path / "analytics.duckdb")
+    result = ValidationResult(approved=True, reason="ok")
+    await logger.log(_make_signal(), None, result)
+    rows = await logger.query("SELECT * FROM decisions")
+    assert len(rows) == 1
+    assert rows[0]["strategy_id"] == "ic_1"
+    assert rows[0]["direction"] == "ENTER"
+    assert rows[0]["reason"] == "IV spike"
+    assert rows[0]["risk_approved"] is True or rows[0]["risk_approved"] == True  # noqa: E712
+    logger.close()

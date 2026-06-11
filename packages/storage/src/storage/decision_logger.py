@@ -34,17 +34,17 @@ class DecisionLogger:
     async def log(
         self,
         signal: SignalEvent,
-        market: MarketEvent,
+        market: MarketEvent | None,
         result: ValidationResult,
     ) -> None:
-        greeks = market.model_greeks
+        greeks = market.model_greeks if market is not None else None
         params = [
             signal.timestamp,
             signal.strategy_id,
-            market.symbol,
-            market.bid,
-            market.ask,
-            market.last,
+            market.symbol if market is not None else None,
+            market.bid if market is not None else None,
+            market.ask if market is not None else None,
+            market.last if market is not None else None,
             greeks.implied_vol if greeks else None,
             greeks.delta if greeks else None,
             greeks.underlying_price if greeks else None,
