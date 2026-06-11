@@ -39,7 +39,7 @@ class StorageSubscriber:
         self._bus.unsubscribe(OrderEvent, self._on_order)
         self._bus.unsubscribe(FillEvent, self._on_fill)
         self._bus.unsubscribe(OrderStatusEvent, self._on_status)
-        self._tick_writer.close()
+        await self._tick_writer.close()
         await self._trade_store.close()
 
     async def _on_market(self, event: MarketEvent) -> None:

@@ -37,18 +37,18 @@ def _opt_event(ts=None, delta=0.55):
     )
 
 
-def test_write_stk_creates_parquet(tmp_path):
+async def test_write_stk_creates_parquet(tmp_path):
     writer = TickWriter(tmp_path, flush_interval=1)
     contract = Contract(symbol="AAPL", sec_type="STK")
     writer.write(_stk_event(), contract)
-    writer.close()
+    await writer.close()
     files = list(tmp_path.rglob("*.parquet"))
     assert len(files) == 1
     assert "sec_type=STK" in str(files[0])
     assert "symbol=AAPL" in str(files[0])
 
 
-def test_write_opt_with_greeks(tmp_path):
+async def test_write_opt_with_greeks(tmp_path):
     writer = TickWriter(tmp_path, flush_interval=1)
     contract = Contract(
         symbol="AAPL260620C00150000",
@@ -58,29 +58,29 @@ def test_write_opt_with_greeks(tmp_path):
         right="C",
     )
     writer.write(_opt_event(), contract)
-    writer.close()
+    await writer.close()
     files = list(tmp_path.rglob("*.parquet"))
     assert len(files) == 1
     assert "sec_type=OPT" in str(files[0])
     assert "strike=150.0" in str(files[0])
 
 
-def test_flush_writes_batch_file(tmp_path):
+async def test_flush_writes_batch_file(tmp_path):
     writer = TickWriter(tmp_path, flush_interval=100)
     contract = Contract(symbol="AAPL", sec_type="STK")
     writer.write(_stk_event(), contract)
     assert len(list(tmp_path.rglob("*.parquet"))) == 0
-    writer.flush()
+    await writer.flush()
     assert len(list(tmp_path.rglob("*.parquet"))) == 1
 
 
-def test_multiple_flushes_create_multiple_files(tmp_path):
+async def test_multiple_flushes_create_multiple_files(tmp_path):
     writer = TickWriter(tmp_path, flush_interval=100)
     contract = Contract(symbol="AAPL", sec_type="STK")
     writer.write(_stk_event(), contract)
-    writer.flush()
+    await writer.flush()
     writer.write(_stk_event(ts=datetime(2026, 6, 4, 14, 31, 0, tzinfo=UTC)), contract)
-    writer.flush()
+    await writer.flush()
     partition_dir = next(iter(tmp_path.rglob("date=*")))
     files = sorted(partition_dir.glob("*.parquet"))
     assert len(files) == 2
@@ -88,8 +88,8 @@ def test_multiple_flushes_create_multiple_files(tmp_path):
     assert files[1].name == "000001.parquet"
 
 
-def test_write_after_close_raises(tmp_path):
+async def test_write_after_close_raises(tmp_path):
     writer = TickWriter(tmp_path, flush_interval=1)
-    writer.close()
+    await writer.close()
     with pytest.raises(RuntimeError):
         writer.write(_stk_event(), Contract(symbol="AAPL", sec_type="STK"))

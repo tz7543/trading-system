@@ -211,7 +211,7 @@ async def test_tick_routing_uses_event_contract(tmp_path, subscriber_env):
     )
     await bus.publish(_market_event("AAPL", contract=stk, last=200.0))
     await bus.publish(_market_event("AAPL", contract=opt, last=5.0))
-    subscriber._tick_writer.close()  # flush
+    await subscriber._tick_writer.close()  # flush
     # Path-agnostic assertions: scan the full tree for partition segments
     files = [str(p) for p in tmp_path.rglob("*.parquet")]
     assert any("sec_type=STK" in f and "symbol=AAPL" in f for f in files)
