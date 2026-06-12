@@ -80,8 +80,11 @@ Degenerate guards:
   "degenerate price series". RR, ATR ratio, and share count are only ever
   computed when their divisors are > 0 — no division-by-zero path exists.
 - Input sanitation at `evaluate()` entry: any bar with a non-finite or
-  non-positive open/high/low/close, high < low, or negative volume → SKIP
-  with reason "invalid bar data" (fail fast, no silent repair).
+  non-positive open/high/low/close, high < low, or a non-finite, zero, or
+  negative volume → SKIP with reason "invalid bar data" (fail fast, no
+  silent repair). Zero-volume bars are data-quality SKIPs, never a
+  gate-false: a symbol printing zero-volume daily bars is not a swing
+  candidate.
 
 ### Target and reward-risk
 
@@ -156,7 +159,9 @@ both) and never calling time-of-day or tzinfo APIs.
 - `ScanResult` dataclass: symbol, verdict, reasons list, entry, stop,
   stop_basis (which term won), t1, t1_fallback, rr, shares, multipliers,
   exit_plan (ma5/ma10/ma20 values, time-stop text), manual_checklist,
-  indicator snapshot (adx, atr, bb_width_pct, …).
+  indicator_snapshot — canonical keys exactly as in the JSON schema below:
+  adx, atr14, atr_ratio, bb_width, bb_width_p20, macd_dif, macd_dea,
+  macd_hist.
 - `evaluate(symbol: str, bars: list[Bar], params: ScanParams, equity: float,
   risk_pct: float, vix: float | None) -> ScanResult` — pure function, no
   I/O. `symbol` is an explicit argument so empty/short `bars` still yield a
@@ -213,9 +218,10 @@ as plain string. Nested shapes are pinned:
   fake handler injected).
 - Unqualifiable contract / empty history / insufficient bars / degenerate
   series → SKIP with reason, scan continues.
-- All numeric edge cases (flat series, zero volume) must not raise; gates
-  evaluate False with reason, and the stop-distance guard above prevents any
-  division by zero.
+- All numeric edge cases (e.g. flat series) must not raise: invalid bars
+  (including zero volume) are screened out by the input-sanitation SKIP,
+  remaining gates evaluate False with reason, and the stop-distance guard
+  above prevents any division by zero.
 
 ## Testing (TDD)
 
