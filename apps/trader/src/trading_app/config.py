@@ -89,6 +89,15 @@ class StrategyConfig(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class ScannerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbols: list[str] = Field(min_length=1)
+    equity: float = Field(gt=0)
+    risk_pct: float = Field(default=0.015, gt=0, le=0.05)
+    vix: float | None = Field(default=None, ge=0)
+
+
 class TraderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -98,6 +107,7 @@ class TraderConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     contracts: list[ContractConfig] = Field(default_factory=list)
     strategy: StrategyConfig | None = None
+    scanner: ScannerConfig | None = None
 
 
 def load_config(path: str | Path = Path("apps/trader/config.toml")) -> TraderConfig:
