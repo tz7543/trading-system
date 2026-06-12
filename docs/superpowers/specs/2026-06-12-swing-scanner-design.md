@@ -36,9 +36,11 @@ explicitly; unit tests must pin each equality edge.
 - ATR ratio = ATR(5) / ATR(20); if ratio > 1.5 (strict) → size multiplier 0.5
   (KB: 高波動縮倉50%). ATR(20) = 0 falls under the degenerate-series SKIP
   guard (see Stop-loss), so this division cannot raise.
-- Optional VIX input (config; no data feed). Bands are half-open
-  `[low, high)`: vix < 15 → 1.25; 15 ≤ vix < 25 → 1.0; 25 ≤ vix < 35 → 0.75;
-  vix ≥ 35 → 0.5. If not provided, multiplier 1.0 and the report marks VIX as
+- Optional VIX input (config; no data feed). Bands: vix < 15 → 1.25;
+  15 ≤ vix < 25 → 1.0; 25 ≤ vix ≤ 35 → 0.75; vix > 35 → 0.5. The 35 edge is
+  KB-explicit (">35→0.5", so exactly 35 stays in the 0.75 band); the 25 edge
+  is KB-ambiguous (both "15~25" and "25~35" claim it) and pinned half-open
+  here. If not provided, multiplier 1.0 and the report marks VIX as
   unchecked.
 
 ### Entry signal — 波段四重確認 (all four → CANDIDATE)
