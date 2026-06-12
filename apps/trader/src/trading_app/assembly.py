@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import json
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
@@ -31,7 +32,9 @@ from market_data.historical import HistoricalDataHandler
 from risk import CircuitBreaker, PreTradeValidator, RealTimeMonitor
 from storage import DecisionLogger, StorageSubscriber, TickWriter, TradeStore
 from strategy.base import BaseStrategy
+from strategy.swing.scanner import ScanResult, evaluate
 from trading_app.config import TraderConfig
+from trading_app.scan_report import json_payload, render_report
 from trading_app.watchdog import MarketDataWatchdog
 from tws_client import AccountState, ConnectionManager, LiveDataHandler
 
@@ -554,6 +557,71 @@ async def publish_market_data(
     for result in results:
         if isinstance(result, Exception):
             logger.error("Market data stream failed: %s", result)
+
+
+async def run_scan(
+    config: TraderConfig,
+    data_handler: DataHandler | None = None,
+    json_path: Path | None = None,
+) -> int:
+    scanner_config = config.scanner
+    if scanner_config is None:
+        raise ValueError("[scanner] config is required for the scan command")
+
+    connection: ConnectionManager | None = None
+    if data_handler is None:
+        symbol_count = len(scanner_config.symbols)
+        logger.info(
+            "scanning %d symbols via TWS; pacing ≈ 15s each (~%d min total)",
+            symbol_count,
+            symbol_count * 15 // 60,
+        )
+        if symbol_count > 40:
+            logger.warning("more than 40 symbols — expect a long scan")
+        ib = ibi.IB()
+        connection = ConnectionManager(
+            ib,
+            host=config.tws.host,
+            port=config.tws.port,
+            client_id=config.tws.client_id,
+        )
+        await connection.connect()
+        data_handler = LiveDataHandler(
+            ib, max_subscriptions=config.tws.max_subscriptions
+        )
+    try:
+        results: list[ScanResult] = []
+        for symbol in scanner_config.symbols:
+            contract = Contract(symbol=symbol, sec_type="STK")
+            try:
+                bars = await data_handler.fetch_history(contract, "2 Y", "1 day")
+            except Exception as exc:  # spec: per-symbol failure → SKIP, continue
+                results.append(
+                    ScanResult(
+                        symbol=symbol,
+                        verdict="SKIP",
+                        reasons=[f"fetch failed: {exc}"],
+                    )
+                )
+                continue
+            results.append(
+                evaluate(
+                    symbol,
+                    bars,
+                    equity=scanner_config.equity,
+                    risk_pct=scanner_config.risk_pct,
+                    vix=scanner_config.vix,
+                )
+            )
+    finally:
+        if connection is not None:
+            connection.disconnect()
+
+    print(render_report(results))
+    if json_path is not None:
+        payload = json_payload(results, generated_at=datetime.now(UTC).isoformat())
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _wire_risk_pipeline(

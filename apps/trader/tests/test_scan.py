@@ -92,3 +92,66 @@ def test_json_payload_schema_and_rounding():
     assert by_symbol["SKP"]["indicator_snapshot"] is None
     assert by_symbol["SKP"]["confirmations"] is None
     assert by_symbol["SKP"]["entry"] is None
+
+
+import json  # noqa: E402
+from datetime import date, timedelta  # noqa: E402
+
+from core.models import Bar, Contract  # noqa: E402
+from trading_app.assembly import run_scan  # noqa: E402
+
+
+class FakeDataHandler:
+    """Implements only what run_scan uses: fetch_history."""
+
+    def __init__(self, history: dict[str, list[Bar]]):
+        self.history = history
+        self.requests: list[tuple[Contract, str, str]] = []
+
+    async def fetch_history(self, contract, duration, bar_size):
+        self.requests.append((contract, duration, bar_size))
+        if contract.symbol == "BOOM":
+            raise RuntimeError("no contract")
+        return self.history.get(contract.symbol, [])
+
+
+def _flat_history(n=400, price=100.0):
+    start = date(2026, 1, 2)
+    return [
+        Bar(start + timedelta(days=i), "X", price, price, price, price, 1000)
+        for i in range(n)
+    ]
+
+
+def _scan_config(symbols):
+    return TraderConfig.model_validate(
+        {"scanner": {"symbols": symbols, "equity": 100000}}
+    )
+
+
+async def test_run_scan_skips_failures_and_continues(capsys, tmp_path):
+    handler = FakeDataHandler({"FLAT": _flat_history()})
+    json_file = tmp_path / "out.json"
+    code = await run_scan(
+        _scan_config(["BOOM", "FLAT", "EMPTY"]),
+        data_handler=handler,
+        json_path=json_file,
+    )
+    assert code == 0
+    # all three symbols requested with spec duration/bar size, STK contracts
+    assert [(c.symbol, c.sec_type, d, b) for c, d, b in handler.requests] == [
+        ("BOOM", "STK", "2 Y", "1 day"),
+        ("FLAT", "STK", "2 Y", "1 day"),
+        ("EMPTY", "STK", "2 Y", "1 day"),
+    ]
+    payload = json.loads(json_file.read_text())
+    verdicts = {r["symbol"]: r["verdict"] for r in payload["results"]}
+    assert verdicts == {"BOOM": "SKIP", "FLAT": "SKIP", "EMPTY": "SKIP"}
+    assert "generated_at" in payload
+    out = capsys.readouterr().out
+    assert "BOOM" in out and "FLAT" in out
+
+
+async def test_run_scan_requires_scanner_section():
+    with pytest.raises(ValueError, match=r"\[scanner\]"):
+        await run_scan(TraderConfig(), data_handler=FakeDataHandler({}))
