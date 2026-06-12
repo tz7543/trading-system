@@ -18,6 +18,8 @@ from strategy.swing.indicators import (
     bollinger,
     in_squeeze,
     macd,
+    nearest_rank_percentile,
+    pivot_highs,
     resample_weekly,
     sma,
 )
@@ -126,6 +128,66 @@ def momentum_confirmed(
     return dif > dea and hist > hist_prev
 
 
+def stop_distance(
+    *,
+    entry: float,
+    atr14: float,
+    struct_low: float,
+    sma20: float,
+    buffer_atr: float = 0.1,
+) -> tuple[float, str]:
+    terms = {"atr": 2.0 * atr14}
+    struct_term = entry - (struct_low - buffer_atr * atr14)
+    if struct_term > 0:
+        terms["structure"] = struct_term
+    ma_term = entry - sma20
+    if ma_term > 0:
+        terms["ma"] = ma_term
+    basis, dist = min(terms.items(), key=lambda item: item[1])
+    floor = 0.5 * atr14
+    if dist < floor:
+        dist, basis = floor, "floor"
+    cap = 2.0 * atr14
+    if dist > cap:
+        dist, basis = cap, "atr"
+    return dist, basis
+
+
+def t1_target(
+    highs: Sequence[float],
+    *,
+    entry: float,
+    dist: float,
+    min_rr: float,
+    window: int,
+    flank: int,
+) -> tuple[float, bool]:
+    t = len(highs) - 1
+    lo = max(0, t - window + 1)
+    candidates = [
+        i for i in pivot_highs(highs, flank) if lo <= i <= t - 2 and highs[i] > entry
+    ]
+    if candidates:
+        return highs[max(candidates)], False
+    return entry + min_rr * dist, True
+
+
+def vix_multiplier(vix: float | None) -> float:
+    if vix is None:
+        return 1.0
+    if vix < 15.0:
+        return 1.25
+    if vix < 25.0:
+        return 1.0
+    if vix < 35.0:
+        return 0.75
+    return 0.5
+
+
+def atr_haircut(ratio: float, threshold: float = 1.5) -> float:
+    return 0.5 if ratio > threshold else 1.0
+
+
 def evaluate(
     symbol: str,
     bars: Sequence[Bar],
@@ -218,5 +280,80 @@ def evaluate(
         if trigger and not momentum:
             reasons.append("突破未獲MACD動能確認")
 
-    # Task 9 extends from here (stop/T1/RR/sizing/exit plan/snapshot).
-    return ScanResult(symbol=symbol, verdict=verdict, reasons=reasons, entry=entry)
+    atr14_t = atr_mid[-1]
+    dist, basis = stop_distance(
+        entry=entry,
+        atr14=atr14_t,
+        struct_low=min(bar.low for bar in bars[-params.struct_window :]),
+        sma20=middle[-1],
+        buffer_atr=params.struct_buffer_atr,
+    )
+    if dist <= 0:
+        return ScanResult(
+            symbol=symbol, verdict="SKIP", reasons=["degenerate price series"]
+        )
+    highs = [bar.high for bar in bars]
+    t1, fallback = t1_target(
+        highs,
+        entry=entry,
+        dist=dist,
+        min_rr=params.min_rr,
+        window=params.pivot_window,
+        flank=params.pivot_flank,
+    )
+    # When fallback, t1 = entry + min_rr * dist so rr is exactly min_rr by
+    # construction; use that directly to avoid float precision drift.
+    rr = params.min_rr if fallback else (t1 - entry) / dist
+    if verdict == "CANDIDATE" and rr < params.min_rr:
+        verdict = "WATCH"
+        reasons.append("盈虧比不足")
+
+    atr_ratio = atr_fast[-1] / atr_slow[-1]
+    atr_mult = atr_haircut(atr_ratio, params.atr_ratio_max)
+    vix_mult = vix_multiplier(vix)
+    shares = math.floor(math.floor(equity * risk_pct / dist) * atr_mult * vix_mult)
+    if shares == 0:
+        reasons.append("部位不足一股（權益過小或停損過寬）")  # noqa: RUF001
+
+    sma5 = sma(closes, 5)
+    sma10 = sma(closes, 10)
+    p20 = nearest_rank_percentile(
+        [w for w in width[-params.bb_pct_window :] if w is not None],
+        params.squeeze_pct,
+    )
+    return ScanResult(
+        symbol=symbol,
+        verdict=verdict,
+        reasons=reasons,
+        entry=entry,
+        stop=entry - dist,
+        stop_basis=basis,
+        t1=t1,
+        t1_fallback=fallback,
+        rr=rr,
+        confirmations={
+            "squeeze": squeeze_recent,
+            "trigger": trigger,
+            "volume": volume_ok,
+            "momentum": momentum,
+        },
+        shares=shares,
+        multipliers={"atr": atr_mult, "vix": vix_mult if vix is not None else None},
+        exit_plan={
+            "ma5": sma5[-1],
+            "ma10": sma10[-1],
+            "ma20": middle[-1],
+            "time_stop": TIME_STOP_TEXT,
+        },
+        manual_checklist=list(MANUAL_CHECKLIST),
+        indicator_snapshot={
+            "adx": adx_t,
+            "atr14": atr14_t,
+            "atr_ratio": atr_ratio,
+            "bb_width": width[-1],
+            "bb_width_p20": p20,
+            "macd_dif": dif[-1],
+            "macd_dea": dea[-1],
+            "macd_hist": hist[-1],
+        },
+    )
