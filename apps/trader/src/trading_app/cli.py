@@ -10,6 +10,7 @@ from trading_app.assembly import (
     build_backtest_app,
     build_live_app,
     load_strategy,
+    run_scan,
     subscribe_strategy,
 )
 from trading_app.config import TraderConfig, load_config
@@ -26,6 +27,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_run_backtest(config))
     if args.command == "live":
         return asyncio.run(_run_live(config))
+    if args.command == "scan":
+        return asyncio.run(run_scan(config, json_path=args.json))
 
     parser.error("missing command")
     return 2
@@ -44,6 +47,13 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("validate-config", parents=[config_parser])
     subparsers.add_parser("backtest", parents=[config_parser])
     subparsers.add_parser("live", parents=[config_parser])
+    scan_parser = subparsers.add_parser("scan", parents=[config_parser])
+    scan_parser.add_argument(
+        "--json",
+        type=Path,
+        default=None,
+        help="Write full scan results JSON to this path",
+    )
     return parser
 
 

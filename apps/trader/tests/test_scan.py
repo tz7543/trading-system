@@ -155,3 +155,14 @@ async def test_run_scan_skips_failures_and_continues(capsys, tmp_path):
 async def test_run_scan_requires_scanner_section():
     with pytest.raises(ValueError, match=r"\[scanner\]"):
         await run_scan(TraderConfig(), data_handler=FakeDataHandler({}))
+
+
+from trading_app.cli import _build_parser  # noqa: E402
+
+
+def test_cli_scan_subcommand_parses():
+    args = _build_parser().parse_args(["scan", "--json", "out.json"])
+    assert args.command == "scan"
+    assert str(args.json) == "out.json"
+    args = _build_parser().parse_args(["scan"])
+    assert args.json is None

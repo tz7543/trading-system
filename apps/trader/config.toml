@@ -9,3 +9,9 @@ max_vega = 1000.0
 max_drawdown = 0.05
 max_position_size = 10
 max_margin_utilization = 0.8
+
+# [scanner]
+# symbols = ["AAPL", "MSFT", "NVDA"]
+# equity = 100000.0
+# risk_pct = 0.015   # 波段單筆風險 1.5%（knowledge base）
+# vix = 18.5         # optional; omit to skip the VIX multiplier
