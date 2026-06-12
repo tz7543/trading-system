@@ -28,13 +28,14 @@ explicitly; unit tests must pin each equality edge.
 |------|------|--------|
 | Trend strength | pass iff ADX(14) > 20 (exactly 20 fails); 20 < ADX ≤ 25 flagged "中間態" warning; ADX > 25 noted as confirmed trend | KB: ADX<20 趨勢指標失效 |
 | Bull regime | pass iff close > SMA(200) | KB: 200MA 牛熊分界，上方只做多 |
-| Higher timeframe | pass iff weekly close > weekly SMA(10) (weekly bars resampled from daily by ISO calendar week) | KB: 多週期方向一致 — proxy chosen here, see Assumptions |
+| Higher timeframe | pass iff weekly close > weekly SMA(10). Weekly bars resample daily bars by ISO calendar week; the in-progress week IS included as the latest weekly bar (its close = latest daily close), so SMA(10) spans the partial week plus the 9 prior completed weeks | KB: 多週期方向一致 — proxy chosen here, see Assumptions |
 | Data sufficiency | ≥ 340 daily bars required (covers SMA(200), and a fully populated 120-value BB-width distribution including its 20-bar warmup, with margin) — else SKIP, not REJECT | — |
 
 ### Volatility haircuts (do not reject; scale suggested size)
 
 - ATR ratio = ATR(5) / ATR(20); if ratio > 1.5 (strict) → size multiplier 0.5
-  (KB: 高波動縮倉50%).
+  (KB: 高波動縮倉50%). ATR(20) = 0 falls under the degenerate-series SKIP
+  guard (see Stop-loss), so this division cannot raise.
 - Optional VIX input (config; no data feed). Bands are half-open
   `[low, high)`: vix < 15 → 1.25; 15 ≤ vix < 25 → 1.0; 25 ≤ vix < 35 → 0.75;
   vix ≥ 35 → 0.5. If not provided, multiplier 1.0 and the report marks VIX as
@@ -74,18 +75,24 @@ Degenerate guards:
 - A struct_stop or ma_stop term that is ≤ 0 (possible for WATCH reporting;
   impossible for CANDIDATE because the trigger requires close > BB middle =
   SMA(20)) is excluded from the `min`.
-- If ATR(14) = 0 or the resulting stop_distance ≤ 0 (flat/degenerate series),
-  the symbol is verdict SKIP with reason "degenerate price series". RR and
-  share count are only ever computed when stop_distance > 0 — no division by
-  zero path exists.
+- If any of ATR(5), ATR(14), ATR(20) = 0, or the resulting stop_distance ≤ 0
+  (flat/degenerate series), the symbol is verdict SKIP with reason
+  "degenerate price series". RR, ATR ratio, and share count are only ever
+  computed when their divisors are > 0 — no division-by-zero path exists.
+- Input sanitation at `evaluate()` entry: any bar with a non-finite or
+  non-positive open/high/low/close, high < low, or negative volume → SKIP
+  with reason "invalid bar data" (fail fast, no silent repair).
 
 ### Target and reward-risk
 
-- T1 = the most recent pivot high above entry within the search window of the
-  last 120 sessions excluding the final 2 sessions (a pivot needs 2 confirmed
-  bars on its right, so t−1 and t are unconfirmable). Pivot high = a bar
-  whose high is strictly greater than the highs of the 2 bars on each side;
-  equal highs (flat tops) do not qualify and fall through to the fallback.
+- T1 = the most recent pivot high above entry. Candidate pivot sessions are
+  exactly s ∈ [t−119, t−2] — the 120-session window ending at today t, minus
+  the final 2 sessions (a pivot needs 2 confirmed bars on its right, so t−1
+  and t are unconfirmable), giving 118 candidates; a candidate's 2-bar flanks
+  may reach older bars outside the window. Pivot high = a bar whose high is
+  strictly greater than the highs of the 2 bars on each side; equal highs
+  (flat tops) do not qualify. A pivot at or below entry does not qualify
+  either; both cases fall through to the fallback.
 - If no such pivot exists (e.g. price at new highs or flat-top structure):
   T1 = entry + 2.5 × stop_distance, flagged `t1_fallback = true`.
 - RR = (T1 − entry) / stop_distance. RR < 2.5 (KB: 波段盈虧比 ≥ 1:2.5) →
@@ -100,6 +107,11 @@ shares = floor( floor(equity × risk_pct ÷ stop_distance) × atr_multiplier × 
 Sizing inputs (`equity`, `risk_pct` default 1.5% per KB, optional `vix`) come
 ONLY from `[scanner]` config — they are not duplicated in `ScanParams`
 (single authority; `ScanParams` holds rule/indicator constants only).
+
+Shares can legitimately floor to 0 (small equity or wide stop); the verdict
+is unchanged and the report flags "部位不足一股". Shares are never negative:
+stop_distance > 0 is guaranteed by the SKIP guard and all multipliers are
+positive.
 
 ### Exit plan (informational output only)
 
@@ -156,8 +168,8 @@ both) and never calling time-of-day or tzinfo APIs.
   optional output file), mirroring the existing subcommand pattern.
 - `config.py`: new optional `[scanner]` Pydantic section with
   `extra="forbid"` like every other section: `symbols: list[str]` (non-empty),
-  `equity: float` (> 0), `risk_pct: float = 0.015`, `vix: float | None =
-  None`. Nothing else — `ScanParams` constants are not exposed in config for
+  `equity: float` (> 0), `risk_pct: float = 0.015` (validated 0 < risk_pct
+  ≤ 0.05), `vix: float | None = None` (≥ 0 when given). Nothing else — `ScanParams` constants are not exposed in config for
   v1 (YAGNI). Modeled as `scanner: ScannerConfig | None = None` on
   `TraderConfig`; running `scan` without the section is a config error
   (mirrors the existing `_require_strategy` pattern).
@@ -169,6 +181,10 @@ both) and never calling time-of-day or tzinfo APIs.
   hardcoded 15 s pacing sleep, `useRTH=True`, `whatToShow="TRADES"` are
   accepted as-is and non-configurable) → `evaluate` → collect results.
   Fetch/qualification failures mark that symbol SKIP and the scan continues.
+  `run_scan` itself performs NO contract qualification or any other TWS call —
+  it builds `core.Contract` values and calls only `data_handler.fetch_history`
+  (qualification happens inside `LiveDataHandler`), so with an injected fake
+  handler no TWS code path is reachable.
   Runtime ≈ 15 s × N symbols is printed up front; if N > 40 a warning notes
   the expected duration (soft cap, not enforced).
 
@@ -183,7 +199,13 @@ the manual checklist.
 `{"generated_at": "<ISO-8601>", "results": [<result>, …]}` where each result
 is `dataclasses.asdict(ScanResult)` with: dates serialized as `YYYY-MM-DD`
 strings, floats rounded to 4 decimals, `None` preserved as JSON null, verdict
-as plain string.
+as plain string. Nested shapes are pinned:
+`stop_basis: "atr" | "structure" | "ma" | "floor"`;
+`multipliers: {"atr": float, "vix": float | null}`;
+`exit_plan: {"ma5": float, "ma10": float, "ma20": float, "time_stop": str}`;
+`indicator_snapshot: {"adx": float, "atr14": float, "atr_ratio": float,
+"bb_width": float, "bb_width_p20": float, "macd_dif": float,
+"macd_dea": float, "macd_hist": float}` (snapshot values null for SKIP).
 
 ## Error handling
 
