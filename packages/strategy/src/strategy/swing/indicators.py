@@ -178,3 +178,52 @@ def macd(
         None if dif[i] is None or dea[i] is None else dif[i] - dea[i] for i in range(n)
     ]
     return dif, dea, hist
+
+
+def resample_weekly(bars: Sequence[Bar]) -> list[Bar]:
+    """Group daily bars by ISO week. Accepts date or datetime timestamps.
+
+    The in-progress week is included as the latest weekly bar (spec rule).
+    """
+    weekly: list[Bar] = []
+    current_key: tuple[int, int] | None = None
+    for bar in bars:
+        iso = bar.timestamp.isocalendar()  # valid on date AND datetime
+        key = (iso[0], iso[1])
+        if key != current_key:
+            weekly.append(
+                Bar(
+                    timestamp=bar.timestamp,
+                    symbol=bar.symbol,
+                    open=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                    volume=bar.volume,
+                )
+            )
+            current_key = key
+            continue
+        last = weekly[-1]
+        weekly[-1] = Bar(
+            timestamp=last.timestamp,
+            symbol=last.symbol,
+            open=last.open,
+            high=max(last.high, bar.high),
+            low=min(last.low, bar.low),
+            close=bar.close,
+            volume=last.volume + bar.volume,
+        )
+    return weekly
+
+
+def pivot_highs(highs: Sequence[float], flank: int = 2) -> list[int]:
+    """Indices whose high is strictly greater than `flank` bars on each side."""
+    out: list[int] = []
+    for i in range(flank, len(highs) - flank):
+        center = highs[i]
+        left_ok = all(center > highs[i - j] for j in range(1, flank + 1))
+        right_ok = all(center > highs[i + j] for j in range(1, flank + 1))
+        if left_ok and right_ok:
+            out.append(i)
+    return out

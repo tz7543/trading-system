@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -11,6 +11,8 @@ from strategy.swing.indicators import (
     in_squeeze,
     macd,
     nearest_rank_percentile,
+    pivot_highs,
+    resample_weekly,
     sma,
     true_range,
 )
@@ -170,3 +172,32 @@ def test_macd_rising_series_positive_dif():
     dif, dea, _hist = macd(closes)
     assert dif[-1] > 0
     assert dea[-1] > 0
+
+
+def test_resample_weekly_groups_iso_weeks_and_accepts_date_or_datetime():
+    # 2026-01-05 is a Monday (ISO week 2); 2026-01-12 the next Monday (week 3)
+    bars = [
+        Bar(date(2026, 1, 5), "T", 10, 12, 9, 11, 100),
+        Bar(datetime(2026, 1, 7), "T", 11, 15, 10, 14, 200),  # datetime mixed in
+        Bar(date(2026, 1, 9), "T", 14, 14, 8, 9, 300),
+        Bar(date(2026, 1, 12), "T", 9, 10, 9, 10, 400),
+    ]
+    weekly = resample_weekly(bars)
+    assert len(weekly) == 2
+    first = weekly[0]
+    assert (first.open, first.high, first.low, first.close) == (10, 15, 8, 9)
+    assert first.volume == 600
+    assert first.timestamp == date(2026, 1, 5)
+    assert weekly[1].close == 10
+
+
+def test_pivot_highs_strict_flanks():
+    #            0  1  2  3  4  5  6
+    highs = [1.0, 2.0, 5.0, 2.0, 1.0, 5.0, 5.0]
+    # idx2: 5 > 1,2 (left) and > 2,1 (right) → pivot
+    # idx5 would need > idx6 (5 > 5 is false) → not a pivot (strict)
+    assert pivot_highs(highs, flank=2) == [2]
+
+
+def test_pivot_highs_flat_top_disqualified():
+    assert pivot_highs([1.0, 5.0, 5.0, 5.0, 1.0], flank=2) == []
