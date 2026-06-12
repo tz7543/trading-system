@@ -156,3 +156,25 @@ def in_squeeze(
     if any(value is None for value in values):
         return None
     return values[-1] <= nearest_rank_percentile(values, pct)
+
+
+def macd(
+    closes: Sequence[float], fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[list[float | None], list[float | None], list[float | None]]:
+    ema_fast = ema(closes, fast)
+    ema_slow = ema(closes, slow)
+    n = len(closes)
+    dif: list[float | None] = [None] * n
+    for i in range(n):
+        if ema_fast[i] is not None and ema_slow[i] is not None:
+            dif[i] = ema_fast[i] - ema_slow[i]
+    first_dif = slow - 1
+    dea: list[float | None] = [None] * n
+    if n > first_dif:
+        dea_tail = ema([v for v in dif[first_dif:] if v is not None], signal)
+        for offset, value in enumerate(dea_tail):
+            dea[first_dif + offset] = value
+    hist: list[float | None] = [
+        None if dif[i] is None or dea[i] is None else dif[i] - dea[i] for i in range(n)
+    ]
+    return dif, dea, hist

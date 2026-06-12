@@ -9,6 +9,7 @@ from strategy.swing.indicators import (
     bollinger,
     ema,
     in_squeeze,
+    macd,
     nearest_rank_percentile,
     sma,
     true_range,
@@ -150,3 +151,22 @@ def test_in_squeeze_inclusive_tie_and_window():
     assert in_squeeze(width, 5, window=5, pct=20.0) is True
     # window not fully populated (includes the None) → None
     assert in_squeeze(width, 4, window=5, pct=20.0) is None
+
+
+def test_macd_alignment_and_constant_series():
+    closes = [10.0] * 40
+    dif, dea, hist = macd(closes, fast=12, slow=26, signal=9)
+    assert len(dif) == len(dea) == len(hist) == 40
+    assert dif[24] is None  # before slow EMA exists
+    assert dif[25] == pytest.approx(0.0)  # first DIF at index slow-1
+    assert dea[32] is None  # signal EMA needs 9 DIF values
+    assert dea[33] == pytest.approx(0.0)  # 25 + 9 - 1
+    assert hist[33] == pytest.approx(0.0)
+    assert hist[32] is None
+
+
+def test_macd_rising_series_positive_dif():
+    closes = [float(i) for i in range(1, 61)]
+    dif, dea, _hist = macd(closes)
+    assert dif[-1] > 0
+    assert dea[-1] > 0
