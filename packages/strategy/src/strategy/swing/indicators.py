@@ -119,3 +119,40 @@ def adx(bars: Sequence[Bar], period: int = 14) -> list[float | None]:
         prev = (prev * (period - 1) + value) / period
         out[i] = prev
     return out
+
+
+def bollinger(
+    closes: Sequence[float], period: int = 20, num_std: float = 2.0
+) -> tuple[
+    list[float | None], list[float | None], list[float | None], list[float | None]
+]:
+    middle = sma(closes, period)
+    n = len(closes)
+    upper: list[float | None] = [None] * n
+    lower: list[float | None] = [None] * n
+    width: list[float | None] = [None] * n
+    for i in range(period - 1, n):
+        mid = middle[i]
+        window = closes[i - period + 1 : i + 1]
+        variance = sum((c - mid) ** 2 for c in window) / period  # population std
+        std = variance**0.5
+        upper[i] = mid + num_std * std
+        lower[i] = mid - num_std * std
+        if mid > 0:
+            width[i] = (upper[i] - lower[i]) / mid
+    return middle, upper, lower, width
+
+
+def in_squeeze(
+    width: Sequence[float | None], idx: int, window: int, pct: float
+) -> bool | None:
+    """width(idx) <= pct-percentile of the `window` widths ending at idx.
+
+    Returns None when the window is not fully populated.
+    """
+    if idx + 1 < window:
+        return None
+    values = width[idx - window + 1 : idx + 1]
+    if any(value is None for value in values):
+        return None
+    return values[-1] <= nearest_rank_percentile(values, pct)

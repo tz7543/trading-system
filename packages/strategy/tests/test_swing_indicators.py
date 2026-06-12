@@ -3,7 +3,16 @@ from datetime import date
 import pytest
 
 from core.models import Bar
-from strategy.swing.indicators import adx, atr, ema, sma, true_range
+from strategy.swing.indicators import (
+    adx,
+    atr,
+    bollinger,
+    ema,
+    in_squeeze,
+    nearest_rank_percentile,
+    sma,
+    true_range,
+)
 
 
 def test_sma_pads_warmup_with_none():
@@ -109,3 +118,35 @@ def test_adx_wilder_hand_computed_period_2():
     assert result[3] == pytest.approx(400 / 7)
     assert result[4] == pytest.approx(1090 / 21)
     assert result[5] == pytest.approx((1090 / 21 + 2300 / 31) / 2)
+
+
+def test_bollinger_constant_series_zero_width():
+    middle, upper, lower, width = bollinger([5.0] * 7, period=5, num_std=2.0)
+    assert middle[4] == upper[4] == lower[4] == 5.0
+    assert width[4] == 0.0
+    assert middle[:4] == [None] * 4
+
+
+def test_bollinger_known_window():
+    closes = [1.0, 2.0, 3.0, 4.0, 5.0]
+    middle, upper, lower, width = bollinger(closes, period=5, num_std=2.0)
+    # mean 3, population var = (4+1+0+1+4)/5 = 2, std = sqrt(2)
+    std = 2**0.5
+    assert middle[4] == pytest.approx(3.0)
+    assert upper[4] == pytest.approx(3 + 2 * std)
+    assert lower[4] == pytest.approx(3 - 2 * std)
+    assert width[4] == pytest.approx(4 * std / 3)  # (upper-lower)/middle
+
+
+def test_nearest_rank_percentile():
+    window = [10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+    # N=10, rank = ceil(0.2*10) = 2 → 2nd smallest = 2.0
+    assert nearest_rank_percentile(window, 20.0) == 2.0
+
+
+def test_in_squeeze_inclusive_tie_and_window():
+    width = [None, 5.0, 4.0, 3.0, 2.0, 1.0]
+    # window=5 ending idx5: values [5,4,3,2,1], p20 = 1.0; width[5]=1.0 <= 1.0 → True
+    assert in_squeeze(width, 5, window=5, pct=20.0) is True
+    # window not fully populated (includes the None) → None
+    assert in_squeeze(width, 4, window=5, pct=20.0) is None
