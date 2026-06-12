@@ -273,6 +273,28 @@ def test_adx_is_100_in_pure_downtrend():
 
 def test_adx_too_short_series_all_none():
     assert adx(_trend_bars(4, 1.0), period=3) == [None] * 4
+
+
+def test_adx_wilder_hand_computed_period_2():
+    bars = [
+        make_bar(0, 9.5, 10.0, 9.0, 9.5),
+        make_bar(1, 10.0, 11.0, 10.0, 10.5),
+        make_bar(2, 11.0, 12.0, 11.0, 11.5),
+        make_bar(3, 11.0, 11.5, 10.0, 10.5),
+        make_bar(4, 11.5, 12.5, 11.0, 12.0),
+        make_bar(5, 12.5, 13.5, 12.0, 13.0),
+    ]
+    # TR=[1,1.5,1.5,1.5,2,1.5]; +DM=[0,1,1,0,1,1]; -DM=[0,0,0,1,0,0]
+    # Wilder(2) +DM=[_,.5,.75,.375,.6875,.84375]; -DM=[_,0,0,.5,.25,.125]
+    # DX=100|p−m|/(p+m) (TR cancels) = [_,100,100,100/7,140/3,2300/31]
+    # ADX(2): idx2=mean(100,100)=100; idx3=(100+100/7)/2=400/7
+    # idx4=(400/7+140/3)/2=1090/21; idx5=(1090/21+2300/31)/2
+    result = adx(bars, period=2)
+    assert result[:2] == [None, None]
+    assert result[2] == pytest.approx(100.0)
+    assert result[3] == pytest.approx(400 / 7)
+    assert result[4] == pytest.approx(1090 / 21)
+    assert result[5] == pytest.approx((1090 / 21 + 2300 / 31) / 2)
 ```
 
 - [ ] **Step 2: Run to verify failure** — `ImportError: cannot import name 'adx'`.
@@ -729,6 +751,7 @@ class ScanResult:
     t1: float | None = None
     t1_fallback: bool = False
     rr: float | None = None
+    confirmations: dict | None = None  # squeeze/trigger/volume/momentum → bool
     shares: int | None = None
     multipliers: dict | None = None
     exit_plan: dict | None = None
@@ -801,18 +824,23 @@ def build_bars(
     n=360,
     ramp_days=349,
     ramp_step=0.25,
-    quiet_step=0.05,
+    quiet_step=-0.15,
     quiet_range=0.2,
     breakout_pct=0.05,
     breakout_volume_mult=3.0,
     base=100.0,
     volume=1_000_000,
 ):
-    """Uptrend ramp → short quiet drift (squeeze) → breakout on the last bar.
+    """Uptrend ramp → shallow PULLBACK toward the rising middle band
+    (squeeze) → breakout cross-up on the last bar.
 
-    Designed to satisfy: ADX>20 (monotonic +DM), close>SMA200, weekly up,
-    squeeze in last 10 sessions, middle-band breakout with width expansion,
-    volume > 20d avg, MACD hist expanding.
+    The pullback (negative quiet_step) is load-bearing: it drags the close
+    BELOW the lagging SMA20 so the final bar satisfies the trigger's
+    closes[-2] ≤ middle[-2] cross-up condition. A monotonic rise can never
+    trigger (close always above its own SMA20). Also satisfies: ADX>20
+    (pullback is short so Wilder decay stays mild), close>SMA200, weekly up,
+    squeeze in last 10 sessions, width expansion, volume > 20d avg, MACD
+    hist expanding on the breakout bar.
     """
     bars = []
     price = base
@@ -841,11 +869,13 @@ def test_full_setup_is_candidate():
 
 
 def test_below_sma200_rejects():
-    # invert the ramp so price ends far below its long average
-    bars = build_bars(ramp_step=-0.25, base=300.0)
+    # invert the ramp so price ends far below its long average; a falling
+    # series also fails the weekly gate, pinning both reasons end-to-end
+    bars = build_bars(ramp_step=-0.25, quiet_step=-0.5, base=300.0)
     result = evaluate("T", bars, equity=100_000, risk_pct=0.015)
     assert result.verdict == "REJECT"
     assert any("200SMA" in r for r in result.reasons)
+    assert any("週線" in r for r in result.reasons)
 
 
 def test_no_breakout_with_squeeze_is_watch():
@@ -863,13 +893,37 @@ def test_breakout_without_volume_rejects():
     assert any("量" in r for r in result.reasons)
 
 
-def test_adx_boundary_exactly_20_fails_gate():
-    # direct boundary check is at unit level: gate uses strict >
+def test_gate_equality_boundaries():
+    # direct boundary checks at unit level: every gate uses strict >
     from strategy.swing.scanner import _gate_failures
     assert _gate_failures(adx_value=20.0, close=100.0, sma200=90.0,
                           weekly_close=100.0, weekly_sma=90.0)
     assert not _gate_failures(adx_value=20.01, close=100.0, sma200=90.0,
                               weekly_close=100.0, weekly_sma=90.0)
+    # close exactly at SMA200 fails; weekly close exactly at weekly SMA fails
+    assert _gate_failures(adx_value=30.0, close=100.0, sma200=100.0,
+                          weekly_close=101.0, weekly_sma=90.0)
+    assert _gate_failures(adx_value=30.0, close=100.0, sma200=90.0,
+                          weekly_close=100.0, weekly_sma=100.0)
+
+
+def test_trigger_and_momentum_boundaries():
+    from strategy.swing.scanner import momentum_confirmed, trigger_fired
+    # yesterday close exactly AT the middle still arms the cross (≤);
+    # width expansion is strict
+    assert trigger_fired(close_prev=10.0, close_now=10.5, mid_prev=10.0,
+                         mid_now=10.2, width_prev=0.03, width_now=0.031)
+    assert not trigger_fired(close_prev=10.0, close_now=10.5, mid_prev=10.0,
+                             mid_now=10.2, width_prev=0.03, width_now=0.03)
+    assert not trigger_fired(close_prev=10.3, close_now=10.5, mid_prev=10.0,
+                             mid_now=10.2, width_prev=0.03, width_now=0.04)
+    assert not trigger_fired(close_prev=10.0, close_now=10.5, mid_prev=None,
+                             mid_now=10.2, width_prev=0.03, width_now=0.04)
+    # equal histogram is NOT expansion; DIF must exceed DEA strictly
+    assert momentum_confirmed(dif=1.0, dea=0.9, hist=0.1, hist_prev=0.05)
+    assert not momentum_confirmed(dif=1.0, dea=0.9, hist=0.1, hist_prev=0.1)
+    assert not momentum_confirmed(dif=0.9, dea=0.9, hist=0.1, hist_prev=0.05)
+    assert not momentum_confirmed(dif=None, dea=0.9, hist=0.1, hist_prev=0.05)
 ```
 
 - [ ] **Step 2: Run to verify failure** — CANDIDATE test fails on `not implemented`.
@@ -908,6 +962,32 @@ def _gate_failures(
     if weekly_sma is None or weekly_close <= weekly_sma:
         failures.append("週線未站上10週SMA")
     return failures
+
+
+def trigger_fired(
+    *,
+    close_prev: float,
+    close_now: float,
+    mid_prev: float | None,
+    mid_now: float | None,
+    width_prev: float | None,
+    width_now: float | None,
+) -> bool:
+    if mid_prev is None or mid_now is None or width_prev is None or width_now is None:
+        return False
+    return close_prev <= mid_prev and close_now > mid_now and width_now > width_prev
+
+
+def momentum_confirmed(
+    *,
+    dif: float | None,
+    dea: float | None,
+    hist: float | None,
+    hist_prev: float | None,
+) -> bool:
+    if dif is None or dea is None or hist is None or hist_prev is None:
+        return False
+    return dif > dea and hist > hist_prev
 ```
 
 Inside `evaluate()` after the degenerate guard:
@@ -944,23 +1024,17 @@ Inside `evaluate()` after the degenerate guard:
         in_squeeze(width, i, params.bb_pct_window, params.squeeze_pct) is True
         for i in range(t - params.squeeze_lookback + 1, t + 1)
     )
-    trigger = (
-        middle[-2] is not None
-        and middle[-1] is not None
-        and width[-1] is not None
-        and width[-2] is not None
-        and closes[-2] <= middle[-2]
-        and closes[-1] > middle[-1]
-        and width[-1] > width[-2]
+    trigger = trigger_fired(
+        close_prev=closes[-2],
+        close_now=closes[-1],
+        mid_prev=middle[-2],
+        mid_now=middle[-1],
+        width_prev=width[-2],
+        width_now=width[-1],
     )
     volume_ok = vol_avg[-1] is not None and volumes[-1] > vol_avg[-1]
-    momentum = (
-        dif[-1] is not None
-        and dea[-1] is not None
-        and hist[-1] is not None
-        and hist[-2] is not None
-        and dif[-1] > dea[-1]
-        and hist[-1] > hist[-2]
+    momentum = momentum_confirmed(
+        dif=dif[-1], dea=dea[-1], hist=hist[-1], hist_prev=hist[-2]
     )
 
     if failures:
@@ -969,7 +1043,8 @@ Inside `evaluate()` after the degenerate guard:
     elif squeeze_recent and trigger and volume_ok and momentum:
         verdict = "CANDIDATE"
     elif squeeze_recent and not trigger:
-        # spec: squeeze present, no trigger yet → 蓄勢中
+        # spec verdict mapping: WATCH is defined by trigger ABSENCE — that
+        # day's volume/momentum flags are only meaningful on the trigger day
         verdict = "WATCH"
         reasons.append("蓄勢中：squeeze 未觸發突破")
     else:
@@ -1015,8 +1090,10 @@ def test_stop_distance_floor_binds():
     assert (dist, basis) == (1.0, "floor")
 
 
-def test_stop_distance_cap_binds():
-    # all terms above 2*atr → cap to atr basis
+def test_stop_distance_atr_term_wins_when_others_wide():
+    # structure/ma terms exceed 2×ATR → the always-present atr term is the
+    # min. (The spec's 2×ATR cap is redundant-by-construction because the
+    # atr term is always a candidate, but the code keeps it per spec.)
     dist, basis = stop_distance(entry=100.0, atr14=2.0, struct_low=80.0, sma20=85.0)
     assert (dist, basis) == (4.0, "atr")
 
@@ -1054,6 +1131,25 @@ def test_vix_multiplier_bands():
     assert vix_multiplier(35.0) == 0.5
 
 
+def test_atr_haircut_boundary():
+    from strategy.swing.scanner import atr_haircut
+    assert atr_haircut(1.5) == 1.0     # exactly 1.5 keeps full size (strict >)
+    assert atr_haircut(1.5001) == 0.5
+
+
+def test_t1_flat_top_and_below_entry_pivots_fall_back():
+    flat = [10.0] * 130
+    flat[100] = flat[101] = 50.0  # flat top — strict flanks disqualify
+    t1, fallback = t1_target(flat, entry=20.0, dist=2.0, min_rr=2.5,
+                             window=120, flank=2)
+    assert fallback is True and t1 == pytest.approx(25.0)
+    below = [10.0] * 130
+    below[100] = 15.0  # genuine pivot but at/below entry
+    t1, fallback = t1_target(below, entry=20.0, dist=2.0, min_rr=2.5,
+                             window=120, flank=2)
+    assert fallback is True and t1 == pytest.approx(25.0)
+
+
 def test_candidate_full_fields_and_sizing():
     result = evaluate("T", build_bars(), equity=100_000, risk_pct=0.015)
     assert result.verdict == "CANDIDATE"
@@ -1067,6 +1163,9 @@ def test_candidate_full_fields_and_sizing():
     }
     assert set(result.exit_plan) == {"ma5", "ma10", "ma20", "time_stop"}
     assert result.manual_checklist  # non-empty for CANDIDATE
+    assert result.confirmations == {
+        "squeeze": True, "trigger": True, "volume": True, "momentum": True,
+    }
 
 
 def test_shares_floor_to_zero_keeps_verdict():
@@ -1130,6 +1229,10 @@ def vix_multiplier(vix: float | None) -> float:
     if vix < 35.0:
         return 0.75
     return 0.5
+
+
+def atr_haircut(ratio: float, threshold: float = 1.5) -> float:
+    return 0.5 if ratio > threshold else 1.0
 ```
 
 Replace the Task-8 ending of `evaluate()` (everything from
@@ -1159,7 +1262,7 @@ Replace the Task-8 ending of `evaluate()` (everything from
         reasons.append("盈虧比不足")
 
     atr_ratio = atr_fast[-1] / atr_slow[-1]
-    atr_mult = 0.5 if atr_ratio > params.atr_ratio_max else 1.0
+    atr_mult = atr_haircut(atr_ratio, params.atr_ratio_max)
     vix_mult = vix_multiplier(vix)
     shares = math.floor(math.floor(equity * risk_pct / dist) * atr_mult * vix_mult)
     if shares == 0:
@@ -1181,6 +1284,12 @@ Replace the Task-8 ending of `evaluate()` (everything from
         t1=t1,
         t1_fallback=fallback,
         rr=rr,
+        confirmations={
+            "squeeze": squeeze_recent,
+            "trigger": trigger,
+            "volume": volume_ok,
+            "momentum": momentum,
+        },
         shares=shares,
         multipliers={"atr": atr_mult, "vix": vix_mult if vix is not None else None},
         exit_plan={
@@ -1315,7 +1424,12 @@ def _results():
         ScanResult(
             symbol="CND", verdict="CANDIDATE", reasons=[],
             entry=101.23456, stop=98.7, stop_basis="ma", t1=110.0,
-            t1_fallback=False, rr=3.27654, shares=59,
+            t1_fallback=False, rr=3.27654,
+            confirmations={
+                "squeeze": True, "trigger": True, "volume": True,
+                "momentum": True,
+            },
+            shares=59,
             multipliers={"atr": 1.0, "vix": None},
             exit_plan={"ma5": 100.9, "ma10": 100.5, "ma20": 99.8, "time_stop": "t"},
             manual_checklist=["check1"],
@@ -1331,7 +1445,9 @@ def _results():
 def test_render_report_sorts_candidates_first():
     text = render_report(_results())
     assert text.index("CND") < text.index("SKP")
-    assert "check1" in text  # manual checklist appears in detail block
+    assert "check1" in text          # manual checklist appears in detail block
+    assert "confirmations:" in text  # four-confirmation status line
+    assert "gates:" in text          # gate values from the snapshot
 
 
 def test_json_payload_schema_and_rounding():
@@ -1341,7 +1457,9 @@ def test_json_payload_schema_and_rounding():
     assert by_symbol["CND"]["entry"] == 101.2346  # 4-dp rounding
     assert by_symbol["CND"]["rr"] == 3.2765
     assert by_symbol["CND"]["stop_basis"] == "ma"
+    assert by_symbol["CND"]["confirmations"]["trigger"] is True
     assert by_symbol["SKP"]["indicator_snapshot"] is None
+    assert by_symbol["SKP"]["confirmations"] is None
     assert by_symbol["SKP"]["entry"] is None
 ```
 
@@ -1401,6 +1519,18 @@ def render_report(results: list[ScanResult]) -> str:
             f"t1={_fmt(r.t1)}{' (fallback)' if r.t1_fallback else ''} "
             f"rr={'-' if r.rr is None else f'{r.rr:.2f}'} shares={r.shares}"
         )
+        if r.confirmations:
+            flags = " ".join(
+                f"{name}={'✓' if ok else '✗'}"
+                for name, ok in r.confirmations.items()
+            )
+            lines.append(f"confirmations: {flags}")
+        if r.indicator_snapshot:
+            snap = r.indicator_snapshot
+            lines.append(
+                f"gates: ADX={snap['adx']:.1f} atr_ratio={snap['atr_ratio']:.2f} "
+                f"bb_width={snap['bb_width']:.4f} (p20={snap['bb_width_p20']:.4f})"
+            )
         if r.exit_plan:
             lines.append(
                 f"exit: 5MA={_fmt(r.exit_plan['ma5'])} "

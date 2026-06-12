@@ -55,9 +55,11 @@ explicitly; unit tests must pin each equality edge.
 4. **Momentum:** MACD(12, 26, 9) has DIF > DEA AND histogram expanding
    (hist(t) > hist(t−1)).
 
-If gates pass but only the squeeze condition holds (no trigger yet) → WATCH
-("蓄勢中"). Any other partial combination → REJECT listing the failed
-confirmations.
+Verdict mapping (pinned): if gates pass, the squeeze holds, and the trigger
+has NOT fired → WATCH ("蓄勢中"), regardless of that day's volume/momentum
+flags — those are only meaningful on the trigger day. If the trigger fired
+but volume or momentum failed → REJECT listing the failed confirmations.
+No squeeze → REJECT.
 
 ### Stop-loss (KB formula)
 
@@ -158,6 +160,8 @@ both) and never calling time-of-day or tzinfo APIs.
   pivot_window=120, …) with KB defaults. No sizing fields.
 - `ScanResult` dataclass: symbol, verdict, reasons list, entry, stop,
   stop_basis (which term won), t1, t1_fallback, rr, shares, multipliers,
+  confirmations ({"squeeze", "trigger", "volume", "momentum"} → bool; None
+  for SKIP),
   exit_plan (ma5/ma10/ma20 values, time-stop text), manual_checklist,
   indicator_snapshot — canonical keys exactly as in the JSON schema below:
   adx, atr14, atr_ratio, bb_width, bb_width_p20, macd_dif, macd_dea,
@@ -206,6 +210,8 @@ is `dataclasses.asdict(ScanResult)` with: dates serialized as `YYYY-MM-DD`
 strings, floats rounded to 4 decimals, `None` preserved as JSON null, verdict
 as plain string. Nested shapes are pinned:
 `stop_basis: "atr" | "structure" | "ma" | "floor"`;
+`confirmations: {"squeeze": bool, "trigger": bool, "volume": bool,
+"momentum": bool} | null`;
 `multipliers: {"atr": float, "vix": float | null}`;
 `exit_plan: {"ma5": float, "ma10": float, "ma20": float, "time_stop": str}`;
 `indicator_snapshot: {"adx": float, "atr14": float, "atr_ratio": float,
