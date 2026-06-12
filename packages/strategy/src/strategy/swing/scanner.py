@@ -26,7 +26,7 @@ from strategy.swing.indicators import (
 
 MANUAL_CHECKLIST = [
     "距財報 ≥ 3 天（無財報日曆資料，自行確認）",  # noqa: RUF001
-    "與既有持胁相關性 < 0.7（無組合資料，自行確認)",  # noqa: RUF001
+    "與既有持倉相關性 < 0.7（無組合資料，自行確認)",  # noqa: RUF001
     "重大事件日（FOMC/CPI）自行確認",  # noqa: RUF001
 ]
 TIME_STOP_TEXT = "≤5日浮盈<0.5R減半；≤15日未達T1全出"  # noqa: RUF001
@@ -242,7 +242,7 @@ def evaluate(
         weekly_sma=weekly_sma_series[-1],
     )
     if adx_t is not None and params.adx_min < adx_t <= params.adx_trend:
-        reasons.append("warning: ADX 20-25 middle state")
+        reasons.append("warning: ADX 20-25 中間態")
 
     squeeze_recent = any(
         in_squeeze(width, i, params.bb_pct_window, params.squeeze_pct) is True
