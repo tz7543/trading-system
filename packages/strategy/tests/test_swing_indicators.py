@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from core.models import Bar
-from strategy.swing.indicators import atr, ema, sma, true_range
+from strategy.swing.indicators import adx, atr, ema, sma, true_range
 
 
 def test_sma_pads_warmup_with_none():
@@ -58,3 +58,54 @@ def test_atr_wilder_recurrence():
     assert result[2] == pytest.approx(7 / 3)
     assert result[3] == pytest.approx(17 / 9)
     assert result[4] == pytest.approx(79 / 27)
+
+
+def _trend_bars(n, step):
+    # Strict monotonic trend with constant 1-point bar range:
+    # uptrend (+step): +DM = step, -DM = 0 every bar → DX = 100 → ADX = 100.
+    bars = []
+    base = 100.0
+    for i in range(n):
+        lo = base + i * step
+        bars.append(make_bar(i % 27, lo, lo + 1, lo, lo + 0.5))
+    return bars
+
+
+def test_adx_is_100_in_pure_uptrend():
+    result = adx(_trend_bars(12, 1.0), period=3)
+    # first ADX at index 2*period-2 = 4
+    assert result[:4] == [None] * 4
+    for value in result[4:]:
+        assert value == pytest.approx(100.0)
+
+
+def test_adx_is_100_in_pure_downtrend():
+    result = adx(_trend_bars(12, -1.0), period=3)
+    for value in result[4:]:
+        assert value == pytest.approx(100.0)
+
+
+def test_adx_too_short_series_all_none():
+    assert adx(_trend_bars(4, 1.0), period=3) == [None] * 4
+
+
+def test_adx_wilder_hand_computed_period_2():
+    bars = [
+        make_bar(0, 9.5, 10.0, 9.0, 9.5),
+        make_bar(1, 10.0, 11.0, 10.0, 10.5),
+        make_bar(2, 11.0, 12.0, 11.0, 11.5),
+        make_bar(3, 11.0, 11.5, 10.0, 10.5),
+        make_bar(4, 11.5, 12.5, 11.0, 12.0),
+        make_bar(5, 12.5, 13.5, 12.0, 13.0),
+    ]
+    # TR=[1,1.5,1.5,1.5,2,1.5]; +DM=[0,1,1,0,1,1]; -DM=[0,0,0,1,0,0]
+    # Wilder(2) +DM=[_,.5,.75,.375,.6875,.84375]; -DM=[_,0,0,.5,.25,.125]
+    # DX=100|p-m|/(p+m) (TR cancels) = [_,100,100,100/7,140/3,2300/31]
+    # ADX(2): idx2=mean(100,100)=100; idx3=(100+100/7)/2=400/7
+    # idx4=(400/7+140/3)/2=1090/21; idx5=(1090/21+2300/31)/2
+    result = adx(bars, period=2)
+    assert result[:2] == [None, None]
+    assert result[2] == pytest.approx(100.0)
+    assert result[3] == pytest.approx(400 / 7)
+    assert result[4] == pytest.approx(1090 / 21)
+    assert result[5] == pytest.approx((1090 / 21 + 2300 / 31) / 2)
