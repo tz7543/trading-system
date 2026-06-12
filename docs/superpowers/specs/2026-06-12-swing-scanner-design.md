@@ -141,10 +141,11 @@ Dependency direction follows AGENTS.md: the rule engine depends only on
 ### `packages/strategy/src/strategy/swing/indicators.py`
 
 Pure functions over `list[float]` / `list[core.Bar]`, no third-party deps:
-`sma`, `ema`, `atr` (Wilder), `adx` (Wilder 14), `bollinger` (middle/upper/
-lower/width), `percentile_rank`, `macd` (dif/dea/hist series), `pivot_highs`,
-`resample_weekly`. Each returns full series aligned to input (None-padded
-warmup) so the rule engine can inspect t and t−1.
+`sma`, `ema`, `true_range`, `wilder_smooth`, `atr` (Wilder), `adx`
+(Wilder 14), `bollinger` (middle/upper/lower/width),
+`nearest_rank_percentile`, `in_squeeze`, `macd` (dif/dea/hist series),
+`pivot_highs`, `resample_weekly`. Each series function returns output aligned
+to input (None-padded warmup) so the rule engine can inspect t and t−1.
 
 **Timestamp type caveat:** ib_async delivers `datetime.date` (not `datetime`)
 for `"1 day"` bars, so `Bar.timestamp` holds a `date` at runtime despite its
